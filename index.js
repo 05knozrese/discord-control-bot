@@ -1,50 +1,43 @@
-const { 
-  Client, 
-  GatewayIntentBits, 
-  ActionRowBuilder, 
-  ButtonBuilder, 
-  ButtonStyle, 
-  EmbedBuilder 
+const {
+  Client,
+  GatewayIntentBits,
+  REST,
+  Routes,
+  SlashCommandBuilder,
+  EmbedBuilder
 } = require("discord.js");
 
 const sqlite3 = require("sqlite3").verbose();
 
 const TOKEN = process.env.TOKEN;
+const CLIENT_ID = process.env.CLIENT_ID;
 
 const client = new Client({
   intents: [
     GatewayIntentBits.Guilds,
-    GatewayIntentBits.GuildMessages,
-    GatewayIntentBits.MessageContent,
-    GatewayIntentBits.GuildPresences,
-    GatewayIntentBits.GuildMembers
+    GatewayIntentBits.GuildMembers,
+    GatewayIntentBits.GuildPresences
   ]
 });
 
-// ---------------- DATABASE ----------------
+// ---------------- DB ----------------
 const db = new sqlite3.Database("./bot.db");
 
-db.run(`
-CREATE TABLE IF NOT EXISTS youtube (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  guild_id TEXT,
-  name TEXT,
-  url TEXT,
-  last_video TEXT
-)
-`);
-
-db.run(`
-CREATE TABLE IF NOT EXISTS games (
+db.run(`CREATE TABLE IF NOT EXISTS games (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   user_id TEXT,
   game TEXT,
   minutes INTEGER,
   date TEXT
-)
-`);
+)`);
 
-// ---------------- GAME TRACKING ----------------
+db.run(`CREATE TABLE IF NOT EXISTS youtube (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  guild_id TEXT,
+  channel TEXT
+)`);
+
+// ---------------- TRACKING FIXED ----------------
 let sessions = {};
 
 client.on("presenceUpdate", (oldP, newP) => {
@@ -54,7 +47,7 @@ client.on("presenceUpdate", (oldP, newP) => {
   const userId = newP.userId;
 
   if (activity) {
-    if (!sessions[userId]) {
+    if (!sessions[userId] || sessions[userId].game !== activity.name) {
       sessions[userId] = {
         game: activity.name,
         start: Date.now()
@@ -74,49 +67,81 @@ client.on("presenceUpdate", (oldP, newP) => {
   }
 });
 
-// ---------------- PANEL ----------------
-client.on("messageCreate", async (msg) => {
-  if (msg.content === "/panel") {
+// ---------------- SLASH COMMANDS ----------------
+const commands = [
+  new SlashCommandBuilder().setName("panel").setDescription("Control panel"),
+
+  new SlashCommandBuilder().setName("stats").setDescription("Weekly stats"),
+
+  new SlashCommandBuilder().setName("leaderboard").setDescription("Top players"),
+
+  new SlashCommandBuilder()
+    .setName("profile")
+    .setDescription("View user profile")
+    .addUserOption(o => o.setName("user").setDescription("User")),
+
+  new SlashCommandBuilder()
+    .setName("ytadd")
+    .setDescription("Add YouTube channel")
+    .addStringOption(o =>
+      o.setName("channel").setDescription("@handle or URL").setRequired(true)
+    ),
+
+  new SlashCommandBuilder().setName("ytlist").setDescription("List YouTube channels")
+];
+
+// Register commands
+const rest = new REST({ version: "10" }).setToken(TOKEN);
+
+async function register() {
+  await rest.put(
+    Routes.applicationCommands(CLIENT_ID),
+    { body: commands }
+  );
+  console.log("Slash commands loaded");
+}
+
+// ---------------- COMMANDS ----------------
+client.on("interactionCreate", async interaction => {
+  if (!interaction.isChatInputCommand()) return;
+
+  const { commandName } = interaction;
+
+  if (commandName === "panel") {
     const embed = new EmbedBuilder()
-      .setTitle("🎛 Control Panel V2")
-      .setDescription("Manage your bot here")
+      .setTitle("🎛 V5 CONTROL PANEL")
+      .setDescription("Everything is inside Discord now")
       .setColor("Blue");
 
-    const row = new ActionRowBuilder().addComponents(
-      new ButtonBuilder()
-        .setCustomId("stats")
-        .setLabel("📊 Weekly Stats")
-        .setStyle(ButtonStyle.Primary),
-
-      new ButtonBuilder()
-        .setCustomId("leaderboard")
-        .setLabel("🏆 Leaderboard")
-        .setStyle(ButtonStyle.Success),
-
-      new ButtonBuilder()
-        .setCustomId("youtube")
-        .setLabel("📺 YouTube Help")
-        .setStyle(ButtonStyle.Secondary)
-    );
-
-    msg.reply({ embeds: [embed], components: [row] });
+    return interaction.reply({ embeds: [embed] });
   }
 
-  // ADD YOUTUBE CHANNEL
-  if (msg.content.startsWith("/addyt")) {
-    const url = msg.content.split(" ")[1];
-    const name = "channel-" + Date.now();
+  if (commandName === "ytadd") {
+    const channel = interaction.options.getString("channel");
 
     db.run(
-      "INSERT INTO youtube (guild_id, name, url, last_video) VALUES (?, ?, ?, '')",
-      [msg.guild.id, name, url]
+      "INSERT INTO youtube (guild_id, channel) VALUES (?, ?)",
+      [interaction.guild.id, channel]
     );
 
-    msg.reply("📺 YouTube channel added!");
+    return interaction.reply("📺 YouTube channel added!");
   }
 
-  // WEEKLY STATS
-  if (msg.content === "/weekly") {
+  if (commandName === "ytlist") {
+    db.all(
+      "SELECT channel FROM youtube WHERE guild_id = ?",
+      [interaction.guild.id],
+      (err, rows) => {
+        let text = rows.length
+          ? rows.map(r => `• ${r.channel}`).join("\n")
+          : "No channels.";
+
+        interaction.reply(text);
+      }
+    );
+  }
+
+  if (commandName === "stats") {
     db.all(
       `SELECT game, SUM(minutes) as total
        FROM games
@@ -125,20 +150,13 @@ client.on("messageCreate", async (msg) => {
        ORDER BY total DESC`,
       [],
       (err, rows) => {
-        if (!rows.length) return msg.reply("No data yet.");
-
-        let text = "📊 Weekly Stats\n\n";
-        rows.forEach(r => {
-          text += `🎮 ${r.game}: ${r.total} min\n`;
-        });
-
-        msg.reply(text);
+        let text = rows.map(r => `🎮 ${r.game}: ${r.total} min`).join("\n");
+        interaction.reply(text || "No data.");
       }
     );
   }
 
-  // LEADERBOARD
-  if (msg.content === "/leaderboard") {
+  if (commandName === "leaderboard") {
     db.all(
       `SELECT user_id, SUM(minutes) as total
        FROM games
@@ -148,84 +166,34 @@ client.on("messageCreate", async (msg) => {
        LIMIT 10`,
       [],
       (err, rows) => {
-        let text = "🏆 Leaderboard\n\n";
+        let text = rows
+          .map((r, i) => `${i + 1}. <@${r.user_id}> - ${r.total} min`)
+          .join("\n");
 
-        rows.forEach((r, i) => {
-          text += `${i + 1}. <@${r.user_id}> - ${r.total} min\n`;
-        });
-
-        msg.reply(text);
-      }
-    );
-  }
-});
-
-// ---------------- BUTTONS ----------------
-client.on("interactionCreate", async (interaction) => {
-  if (!interaction.isButton()) return;
-
-  if (interaction.customId === "stats") {
-    db.all(
-      `SELECT game, SUM(minutes) as total
-       FROM games
-       WHERE date >= date('now','-7 day')
-       GROUP BY game
-       ORDER BY total DESC`,
-      [],
-      (err, rows) => {
-        let text = "📊 Weekly Stats\n\n";
-        if (!rows.length) text = "No data yet.";
-
-        rows.forEach(r => {
-          text += `🎮 ${r.game}: ${r.total} min\n`;
-        });
-
-        interaction.reply({ content: text, ephemeral: true });
+        interaction.reply(text || "No data.");
       }
     );
   }
 
-  if (interaction.customId === "leaderboard") {
-    db.all(
-      `SELECT user_id, SUM(minutes) as total
-       FROM games
-       WHERE date >= date('now','-7 day')
-       GROUP BY user_id
-       ORDER BY total DESC
-       LIMIT 10`,
-      [],
-      (err, rows) => {
-        let text = "🏆 Leaderboard\n\n";
+  if (commandName === "profile") {
+    const user = interaction.options.getUser("user") || interaction.user;
 
-        rows.forEach((r, i) => {
-          text += `${i + 1}. <@${r.user_id}> - ${r.total} min\n`;
-        });
-
-        interaction.reply({ content: text, ephemeral: true });
+    db.get(
+      "SELECT SUM(minutes) as total FROM games WHERE user_id = ?",
+      [user.id],
+      (err, row) => {
+        interaction.reply(
+          `👤 ${user.username}\n🎮 Total: ${row?.total || 0} min`
+        );
       }
     );
-  }
-
-  if (interaction.customId === "youtube") {
-    interaction.reply({
-      content:
-`📺 YouTube Setup:
-
-Use:
-• /addyt <rss_url>
-• /weekly
-• /leaderboard
-
-RSS format:
-https://www.youtube.com/feeds/videos.xml?channel_id=ID`,
-      ephemeral: true
-    });
   }
 });
 
 // ---------------- START ----------------
-client.once("ready", () => {
+client.once("ready", async () => {
   console.log(`Logged in as ${client.user.tag}`);
+  await register();
 });
 
 client.login(TOKEN);
