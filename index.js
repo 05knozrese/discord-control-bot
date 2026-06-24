@@ -10,33 +10,92 @@ const {
 const sqlite3 = require("sqlite3").verbose();
 const db = new sqlite3.Database("./bot.db");
 
-// ---------------- GAMING TABLE ----------------
+// ---------------- INTENTS ----------------
+const client = new Client({
+  intents: [
+    GatewayIntentBits.Guilds,
+    GatewayIntentBits.GuildMessages,
+    GatewayIntentBits.MessageContent,
+    GatewayIntentBits.GuildPresences,
+    GatewayIntentBits.GuildMembers
+  ]
+});
+
+// ---------------- DB ----------------
 db.run(`
 CREATE TABLE IF NOT EXISTS gaming (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   userId TEXT,
   game TEXT,
   startTime INTEGER,
+  endTime INTEGER,
   duration INTEGER DEFAULT 0
 )
 `);
 
-// ---------------- CLIENT ----------------
-const client = new Client({
-  intents: [
-    GatewayIntentBits.Guilds,
-    GatewayIntentBits.GuildMessages,
-    GatewayIntentBits.MessageContent
-  ]
+// ---------------- ACTIVE SESSIONS ----------------
+const sessions = {};
+
+// ---------------- AUTO PRESENCE TRACKER ----------------
+client.on("presenceUpdate", (oldP, newP) => {
+  try {
+    const userId = newP.userId;
+    if (!userId) return;
+
+    const activity = newP.activities?.find(a => a.type === 0);
+    const oldActivity = oldP?.activities?.find(a => a.type === 0);
+
+    // START GAME
+    if (activity && !oldActivity) {
+      sessions[userId] = {
+        game: activity.name,
+        start: Date.now()
+      };
+    }
+
+    // STOP GAME
+    if (!activity && oldActivity && sessions[userId]) {
+      const s = sessions[userId];
+      delete sessions[userId];
+
+      const duration = Math.floor((Date.now() - s.start) / 60000);
+
+      db.run(
+        "INSERT INTO gaming (userId, game, startTime, endTime, duration) VALUES (?,?,?,?,?)",
+        [userId, s.game, s.start, Date.now(), duration]
+      );
+    }
+
+    // SWITCH GAME
+    if (activity && oldActivity && activity.name !== oldActivity.name) {
+      const s = sessions[userId];
+
+      if (s) {
+        const duration = Math.floor((Date.now() - s.start) / 60000);
+
+        db.run(
+          "INSERT INTO gaming (userId, game, startTime, endTime, duration) VALUES (?,?,?,?,?)",
+          [userId, s.game, s.start, Date.now(), duration]
+        );
+      }
+
+      sessions[userId] = {
+        game: activity.name,
+        start: Date.now()
+      };
+    }
+  } catch (err) {
+    console.log("Presence error:", err);
+  }
 });
 
-// ---------------- PANEL UI ----------------
+// ---------------- PANEL ----------------
 function panel() {
   return new EmbedBuilder()
-    .setTitle("🎛 CONTROL PANEL")
+    .setTitle("🎛 CONTROL PANEL V11")
     .setDescription(
 `🏈 NFL Dashboard
-🎮 Gaming Center
+🎮 Auto Gaming Tracker
 📺 YouTube Center
 🔔 Notifications`
     )
@@ -81,39 +140,7 @@ client.on("messageCreate", async (m) => {
     });
   }
 
-  // ---------------- GAMING COMMANDS ----------------
-
-  if (m.content.startsWith("!play start")) {
-    const game = m.content.split(" ").slice(2).join(" ");
-    if (!game) return m.reply("❌ Enter a game name");
-
-    db.run(
-      "INSERT INTO gaming (userId, game, startTime) VALUES (?,?,?)",
-      [m.author.id, game, Date.now()]
-    );
-
-    return m.reply(`🎮 Started tracking: **${game}**`);
-  }
-
-  if (m.content === "!play stop") {
-    db.get(
-      "SELECT * FROM gaming WHERE userId=? ORDER BY id DESC LIMIT 1",
-      [m.author.id],
-      (err, row) => {
-        if (!row) return m.reply("❌ No active session");
-
-        const mins = Math.floor((Date.now() - row.startTime) / 60000);
-
-        db.run(
-          "UPDATE gaming SET duration=? WHERE id=?",
-          [mins, row.id]
-        );
-
-        return m.reply(`⏹ Session saved: **${row.game}** (${mins} min)`);
-      }
-    );
-  }
-
+  // GAMING STATS
   if (m.content === "!gaming stats") {
     db.all(
       "SELECT * FROM gaming WHERE userId=? ORDER BY id DESC LIMIT 10",
@@ -127,12 +154,12 @@ client.on("messageCreate", async (m) => {
         });
 
         return m.reply(
-`🎮 GAMING STATS
+`🎮 AUTO GAMING STATS
 
-⏱ Total Time: ${total} min
+⏱ Total: ${total} min
 
-📊 Recent Sessions:
-${list.join("\n") || "No sessions yet"}`
+📊 Recent:
+${list.join("\n") || "No activity yet"}`
         );
       }
     );
@@ -164,46 +191,49 @@ client.on("interactionCreate", async (i) => {
 📅 Schedule:
 https://www.espn.com/nfl/team/schedule/_/name/phi/philadelphia-eagles
 
-📊 Last games + stats coming soon`
+📊 Last games: coming soon`
       );
     }
 
-    // GAMING TAB
+    // GAMING (AUTO SYSTEM)
     if (i.customId === "gaming") {
       return i.editReply(
-`🎮 GAMING CENTER
+`🎮 AUTO GAMING TRACKER
 
-Commands:
-!play start <game>
-!play stop
-!gaming stats`
+✔ Automatically detects what you play in Discord
+
+📊 Features:
+- Session tracking
+- Playtime logging
+- History saved
+
+⚠️ Requires Presence Intent enabled`
       );
     }
 
-    // YOUTUBE TAB (SAFE PLACEHOLDER)
+    // YOUTUBE (SAFE)
     if (i.customId === "youtube") {
       return i.editReply(
 `📺 YOUTUBE CENTER
 
-⚠️ Feature coming next update
+⚠️ Not active yet
 
-Commands:
-!yt add <channel>
-!yt list
-!yt remove`
+Next:
+- Channel tracking
+- Upload alerts
+- No duplicate pings`
       );
     }
 
-    // NOTIFICATIONS TAB
+    // NOTIFICATIONS
     if (i.customId === "notif") {
       return i.editReply(
 `🔔 NOTIFICATION CENTER
 
-⚠️ Coming soon:
-
+Coming soon:
+- NFL score alerts
 - YouTube uploads
-- NFL score pings
-- Custom alerts`
+- Custom pings`
       );
     }
 
