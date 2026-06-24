@@ -1,7 +1,7 @@
 const https = require("https");
 const db = require("./db");
 
-// ---------------- SAFE FEED FETCH ----------------
+// ---------------- SAFE RSS FETCH ----------------
 function getFeed(channelId) {
   return new Promise((resolve, reject) => {
     https
@@ -18,7 +18,7 @@ function getFeed(channelId) {
   });
 }
 
-// ---------------- INIT (AUTO CHECK UPLOADS) ----------------
+// ---------------- INIT (AUTO UPDATES) ----------------
 function init(client) {
   setInterval(async () => {
     db.all("SELECT * FROM youtube", async (err, rows) => {
@@ -33,7 +33,7 @@ function init(client) {
 
           if (!videoId) continue;
 
-          // STOP DUPLICATES
+          // prevent duplicate alerts
           if (r.last_video === videoId) continue;
 
           db.run(
@@ -41,7 +41,10 @@ function init(client) {
             [videoId, r.id]
           );
 
-          const channel = await client.channels.fetch(r.notify_channel).catch(() => null);
+          const channel = await client.channels
+            .fetch(r.notify_channel)
+            .catch(() => null);
+
           if (!channel) continue;
 
           channel.send(
@@ -49,7 +52,7 @@ function init(client) {
           );
 
         } catch (e) {
-          console.log("YouTube loop error:", e.message);
+          console.log("YouTube error:", e.message);
         }
       }
     });
@@ -70,8 +73,13 @@ function commands(client, m) {
 
     getFeed(id)
       .then((text) => {
-        const name =
-          text.match(/<name>(.*?)<\/name>/)?.[1] || "Unknown Channel";
+        // 🔥 FIXED NAME PARSING (REAL FIX)
+        let name =
+          text.match(/<title>(.*?)<\/title>/)?.[1] ||
+          text.match(/<name>(.*?)<\/name>/)?.[1] ||
+          "Unknown Channel";
+
+        name = name.replace(" - YouTube", "").trim();
 
         const latest =
           text.match(/<yt:videoId>(.*?)<\/yt:videoId>/)?.[1] || "";
@@ -102,7 +110,7 @@ function commands(client, m) {
         rows
           .map(
             (r, i) =>
-              `**${i + 1}. ${r.channel_name}**\nhttps://youtube.com/channel/${r.channel_id}`
+              `**${i + 1}. ${r.channel_name || "Unknown Channel"}**\nhttps://youtube.com/channel/${r.channel_id}`
           )
           .join("\n\n")
       );
