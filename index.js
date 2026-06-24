@@ -17,74 +17,75 @@ const client = new Client({
 
 // ---------------- STATE ----------------
 let nflChannel = null;
-let ytChannel = null;
+let ytChannels = [];
 
-// NFL cache (avoid spam duplicates)
 let lastNFL = "";
-
-// YouTube cache per channel
 let lastVideos = {};
-
-// Notification toggles
-let settings = {
-  nfl: true,
-  youtube: true
-};
 
 // ---------------- READY ----------------
 client.once("ready", () => {
-  console.log(`✅ V4 ONLINE: ${client.user.tag}`);
+  console.log(`✅ V5 ONLINE: ${client.user.tag}`);
 });
 
-// ---------------- PANEL ----------------
+// ---------------- COMMANDS ----------------
 client.on("messageCreate", async (m) => {
   if (m.author.bot) return;
 
+  const args = m.content.split(" ");
+
+  // PANEL
   if (m.content === "!panel") {
     return m.reply(
-      "🎛 V4 CONTROL HUB\n\n" +
+      "🎛 V5 CONTROL PANEL\n\n" +
       "!nflon / !nfloff\n" +
-      "!yton / !ytoff\n" +
-      "!status → check system\n" +
-      "!nfl → test NFL"
+      "!ytadd <channelId>\n" +
+      "!ytdel <channelId>\n" +
+      "!ytlist\n" +
+      "!nfl (test)\n"
     );
   }
 
-  // ---------------- TOGGLES ----------------
+  // NFL TOGGLE
   if (m.content === "!nflon") {
     nflChannel = m.channel.id;
-    settings.nfl = true;
-    return m.reply("🏈 NFL ENABLED");
+    return m.reply("🏈 NFL updates ENABLED");
   }
 
   if (m.content === "!nfloff") {
-    settings.nfl = false;
-    return m.reply("🏈 NFL DISABLED");
+    nflChannel = null;
+    return m.reply("🏈 NFL updates DISABLED");
   }
 
-  if (m.content === "!yton") {
-    ytChannel = m.channel.id;
-    settings.youtube = true;
-    return m.reply("📺 YouTube ENABLED");
-  }
-
-  if (m.content === "!ytoff") {
-    settings.youtube = false;
-    return m.reply("📺 YouTube DISABLED");
-  }
-
-  if (m.content === "!status") {
-    return m.reply(
-      `📊 STATUS\nNFL: ${settings.nfl}\nYT: ${settings.youtube}`
-    );
-  }
-
+  // NFL TEST
   if (m.content === "!nfl") {
     return m.reply(await getNFL());
   }
+
+  // YOUTUBE ADD
+  if (m.content.startsWith("!ytadd ")) {
+    const id = args[1];
+    if (!ytChannels.includes(id)) ytChannels.push(id);
+    return m.reply("📺 YouTube channel added");
+  }
+
+  // YOUTUBE REMOVE
+  if (m.content.startsWith("!ytdel ")) {
+    const id = args[1];
+    ytChannels = ytChannels.filter(c => c !== id);
+    return m.reply("📺 YouTube channel removed");
+  }
+
+  // YOUTUBE LIST
+  if (m.content === "!ytlist") {
+    return m.reply(
+      ytChannels.length
+        ? ytChannels.join("\n")
+        : "No YouTube channels added"
+    );
+  }
 });
 
-// ---------------- NFL (MULTI GAME) ----------------
+// ---------------- NFL API ----------------
 async function getNFL() {
   try {
     const res = await fetch(
@@ -93,57 +94,57 @@ async function getNFL() {
 
     const data = await res.json();
 
-    return data.events.slice(0, 3).map(g => {
+    const games = data.events.slice(0, 5);
+
+    return games.map(g => {
       const c = g.competitions[0];
       const t = c.competitors;
 
-      return `🏈 ${t[0].team.abbreviation} ${t[0].score} - ${t[1].score} ${t[1].team.abbreviation} (${c.status.displayClock})`;
+      return `🏈 ${t[0].team.abbreviation} ${t[0].score} - ${t[1].score} ${t[1].team.abbreviation} | ${c.status.type.shortDetail}`;
     }).join("\n");
 
   } catch {
-    return "❌ NFL error";
+    return "❌ NFL API error";
   }
 }
 
-// ---------------- AUTO NFL ----------------
+// ---------------- NFL AUTO ----------------
 setInterval(async () => {
-  if (!settings.nfl || !nflChannel) return;
+  if (!nflChannel) return;
 
   try {
     const msg = await getNFL();
     if (msg === lastNFL) return;
     lastNFL = msg;
 
-    const channel = await client.channels.fetch(nflChannel);
-    channel.send(msg);
-
+    const ch = await client.channels.fetch(nflChannel);
+    ch.send(msg);
   } catch {}
 }, 30000);
 
-// ---------------- YOUTUBE MULTI ----------------
+// ---------------- YOUTUBE AUTO ----------------
 async function checkYouTube() {
-  if (!settings.youtube || !ytChannel) return;
+  for (const channelId of ytChannels) {
+    try {
+      const url = `https://www.youtube.com/feeds/videos.xml?channel_id=${channelId}`;
 
-  try {
-    const url =
-      "https://www.youtube.com/feeds/videos.xml?channel_id=UC_x5XG1OV2P6uZZ5FSM9Ttw";
+      const res = await fetch(url);
+      const text = await res.text();
 
-    const res = await fetch(url);
-    const text = await res.text();
+      const match = text.match(/<yt:videoId>(.*?)<\/yt:videoId>/);
+      if (!match) continue;
 
-    const match = text.match(/<yt:videoId>(.*?)<\/yt:videoId>/);
-    if (!match) return;
+      const videoId = match[1];
 
-    const videoId = match[1];
+      if (lastVideos[channelId] === videoId) continue;
 
-    if (lastVideos[ytChannel] === videoId) return;
+      lastVideos[channelId] = videoId;
 
-    lastVideos[ytChannel] = videoId;
+      const ch = await client.channels.fetch(nflChannel || ytChannels[0]);
+      ch.send(`📺 NEW VIDEO: https://youtube.com/watch?v=${videoId}`);
 
-    const channel = await client.channels.fetch(ytChannel);
-    channel.send(`📺 NEW VIDEO: https://youtube.com/watch?v=${videoId}`);
-
-  } catch {}
+    } catch {}
+  }
 }
 
 setInterval(checkYouTube, 60000);
