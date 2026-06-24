@@ -4,10 +4,8 @@ function commands(client, m) {
   if (m.content !== "!panel") return;
 
   const embed = new EmbedBuilder()
-    .setTitle("🎛 CONTROL HUB V7.2")
-    .setDescription(
-      "🏈 NFL Dashboard\n📺 YouTube Tracking\n⏰ Reminders\n⚙️ User Settings"
-    )
+    .setTitle("🎛 CONTROL PANEL V7.2")
+    .setDescription("Full system control hub")
     .setColor("Blue");
 
   const row = new ActionRowBuilder().addComponents(
