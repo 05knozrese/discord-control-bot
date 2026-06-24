@@ -1,26 +1,27 @@
 const {
   Client,
   GatewayIntentBits,
-  REST,
-  Routes,
-  SlashCommandBuilder,
-  EmbedBuilder
+  EmbedBuilder,
+  ActionRowBuilder,
+  ButtonBuilder,
+  ButtonStyle
 } = require("discord.js");
 
 const sqlite3 = require("sqlite3").verbose();
 
 const TOKEN = process.env.TOKEN;
-const CLIENT_ID = process.env.CLIENT_ID;
 
 const client = new Client({
   intents: [
     GatewayIntentBits.Guilds,
     GatewayIntentBits.GuildMembers,
-    GatewayIntentBits.GuildPresences
+    GatewayIntentBits.GuildPresences,
+    GatewayIntentBits.GuildMessages,
+    GatewayIntentBits.MessageContent
   ]
 });
 
-// ---------------- DATABASE ----------------
+// ---------------- DB ----------------
 const db = new sqlite3.Database("./bot.db");
 
 db.run(`CREATE TABLE IF NOT EXISTS games (
@@ -32,20 +33,15 @@ db.run(`CREATE TABLE IF NOT EXISTS games (
 
 db.run(`CREATE TABLE IF NOT EXISTS youtube (
   guild_id TEXT,
-  channel TEXT,
-  notify_mode TEXT DEFAULT 'ping'
+  channel_id TEXT,
+  last_video TEXT,
+  mode TEXT
 )`);
 
 db.run(`CREATE TABLE IF NOT EXISTS reminders (
   user_id TEXT,
-  message TEXT,
+  msg TEXT,
   time INTEGER
-)`);
-
-db.run(`CREATE TABLE IF NOT EXISTS settings (
-  user_id TEXT,
-  youtube_mode TEXT DEFAULT 'ping',
-  nfl_mode TEXT DEFAULT 'ping'
 )`);
 
 // ---------------- GAME TRACKING ----------------
@@ -55,78 +51,35 @@ client.on("presenceUpdate", (oldP, newP) => {
   if (!newP?.userId) return;
 
   const activity = newP.activities?.find(a => a.type === 0);
-  const userId = newP.userId;
+  const id = newP.userId;
 
   if (activity) {
-    if (!sessions[userId] || sessions[userId].game !== activity.name) {
-      sessions[userId] = {
+    if (!sessions[id]) {
+      sessions[id] = {
         game: activity.name,
         start: Date.now()
       };
     }
-  } else if (sessions[userId]) {
-    const s = sessions[userId];
-    delete sessions[userId];
+  } else if (sessions[id]) {
+    const s = sessions[id];
+    delete sessions[id];
 
     const mins = Math.floor((Date.now() - s.start) / 60000);
     const date = new Date().toISOString().split("T")[0];
 
-    db.run(
-      "INSERT INTO games VALUES (?, ?, ?, ?)",
-      [userId, s.game, mins, date]
-    );
+    db.run("INSERT INTO games VALUES (?,?,?,?)", [
+      id,
+      s.game,
+      mins,
+      date
+    ]);
   }
 });
 
-// ---------------- SLASH COMMANDS ----------------
-const commands = [
-  new SlashCommandBuilder().setName("panel").setDescription("Open control panel"),
-
-  new SlashCommandBuilder().setName("stats").setDescription("Weekly stats"),
-
-  new SlashCommandBuilder().setName("leaderboard").setDescription("Top players"),
-
-  new SlashCommandBuilder()
-    .setName("profile")
-    .setDescription("View profile")
-    .addUserOption(o => o.setName("user")),
-
-  new SlashCommandBuilder()
-    .setName("ytadd")
-    .setDescription("Add YouTube channel")
-    .addStringOption(o =>
-      o.setName("channel").setRequired(true)
-    ),
-
-  new SlashCommandBuilder()
-    .setName("ytlist")
-    .setDescription("List YouTube channels"),
-
-  new SlashCommandBuilder()
-    .setName("remindme")
-    .setDescription("Set reminder")
-    .addStringOption(o => o.setName("time").setRequired(true))
-    .addStringOption(o => o.setName("message").setRequired(true)),
-
-  new SlashCommandBuilder()
-    .setName("notify")
-    .setDescription("Set notification mode (ping/silent/off)")
-];
-
-// ---------------- REGISTER COMMANDS ----------------
-const rest = new REST({ version: "10" }).setToken(TOKEN);
-
-async function register() {
-  await rest.put(
-    Routes.applicationCommands(CLIENT_ID),
-    { body: commands }
-  );
-}
-
 // ---------------- PANEL ----------------
-function panelEmbed() {
+function panel() {
   return new EmbedBuilder()
-    .setTitle("🎛 CONTROL PANEL")
+    .setTitle("🎛 CONTROL HUB")
     .setDescription(`
 🎮 Gaming
 📺 YouTube
@@ -135,139 +88,163 @@ function panelEmbed() {
 ⏰ Reminders
 📊 Stats
 🏆 Leaderboard
-👤 Profile
 `)
     .setColor("Blue");
 }
 
-// ---------------- COMMANDS ----------------
-client.on("interactionCreate", async (i) => {
-  if (!i.isChatInputCommand()) return;
+// ---------------- YOUTUBE RSS ----------------
+const fetch = global.fetch;
 
-  const cmd = i.commandName;
+async function checkYouTube() {
+  db.all("SELECT * FROM youtube", [], async (e, rows) => {
+    for (const ch of rows) {
+      try {
+        const url = `https://www.youtube.com/feeds/videos.xml?channel_id=${ch.channel_id}`;
 
-  if (cmd === "panel") {
-    return i.reply({ embeds: [panelEmbed()] });
-  }
+        const res = await fetch(url);
+        const text = await res.text();
 
-  if (cmd === "stats") {
-    db.all(
-      `SELECT game, SUM(minutes) total
-       FROM games
-       WHERE date >= date('now','-7 day')
-       GROUP BY game
-       ORDER BY total DESC`,
-      [],
-      (e, r) => {
-        i.reply(r.map(x => `🎮 ${x.game}: ${x.total}m`).join("\n") || "No data");
-      }
-    );
-  }
+        const match = text.match(/<entry>[\s\S]*?<yt:videoId>(.*?)<\/yt:videoId>[\s\S]*?<\/entry>/);
 
-  if (cmd === "leaderboard") {
-    db.all(
-      `SELECT user_id, SUM(minutes) total
-       FROM games
-       WHERE date >= date('now','-7 day')
-       GROUP BY user_id
-       ORDER BY total DESC
-       LIMIT 10`,
-      [],
-      (e, r) => {
-        i.reply(r.map((x, idx) => `${idx+1}. <@${x.user_id}> - ${x.total}m`).join("\n"));
-      }
-    );
-  }
+        if (!match) continue;
 
-  if (cmd === "profile") {
-    const user = i.options.getUser("user") || i.user;
+        const videoId = match[1];
 
-    db.get(
-      `SELECT SUM(minutes) total FROM games WHERE user_id = ?`,
-      [user.id],
-      (e, r) => {
-        i.reply(`👤 ${user.username}\n🎮 Total: ${r?.total || 0} min`);
-      }
-    );
-  }
+        if (ch.last_video === videoId) continue;
 
-  if (cmd === "ytadd") {
-    const ch = i.options.getString("channel");
-
-    db.run(
-      "INSERT INTO youtube VALUES (?, ?, 'ping')",
-      [i.guild.id, ch]
-    );
-
-    i.reply("📺 Added YouTube channel");
-  }
-
-  if (cmd === "ytlist") {
-    db.all(
-      "SELECT channel FROM youtube WHERE guild_id = ?",
-      [i.guild.id],
-      (e, r) => {
-        if (!r.length) return i.reply("No channels");
-
-        i.reply(
-          r.map(x =>
-            x.channel.startsWith("http")
-              ? `📺 ${x.channel}`
-              : `📺 https://youtube.com/@${x.channel}`
-          ).join("\n")
+        db.run(
+          "UPDATE youtube SET last_video=? WHERE channel_id=?",
+          [videoId, ch.channel_id]
         );
+
+        const msg =
+          ch.mode === "ping"
+            ? `🔔 NEW VIDEO (PING)\nhttps://youtube.com/watch?v=${videoId}`
+            : `📺 NEW VIDEO\nhttps://youtube.com/watch?v=${videoId}`;
+
+        console.log(msg);
+      } catch (err) {
+        console.log("YouTube error", err);
       }
+    }
+  });
+}
+
+// run every 60 sec
+setInterval(checkYouTube, 60000);
+
+// ---------------- NFL (ESPN API NO KEY) ----------------
+async function getNFL() {
+  const res = await fetch(
+    "https://site.api.espn.com/apis/site/v2/sports/football/nfl/scoreboard"
+  );
+
+  const data = await res.json();
+
+  return data.events.map(g => {
+    const c = g.competitions[0];
+    const t = c.competitors;
+
+    return {
+      name: g.name,
+      status: c.status.type.state,
+      clock: c.status.displayClock,
+      team1: t[0].team.abbreviation,
+      team2: t[1].team.abbreviation,
+      score1: t[0].score,
+      score2: t[1].score
+    };
+  });
+}
+
+// refresh every 30 sec
+setInterval(async () => {
+  const games = await getNFL();
+
+  games.forEach(g => {
+    console.log(
+      `🏈 ${g.team1} ${g.score1} - ${g.score2} ${g.team2} | ${g.clock}`
     );
-  }
+  });
+}, 30000);
 
-  if (cmd === "remindme") {
-    const time = i.options.getString("time");
-    const msg = i.options.getString("message");
-
-    const ms = parseInt(time) * 60000;
-
-    db.run(
-      "INSERT INTO reminders VALUES (?, ?, ?)",
-      [i.user.id, msg, Date.now() + ms]
-    );
-
-    i.reply("⏰ Reminder set!");
-  }
-
-  if (cmd === "notify") {
-    const mode = i.options.getString("mode");
-
-    db.run(
-      "INSERT INTO settings VALUES (?, ?, ?)",
-      [i.user.id, mode, mode]
-    );
-
-    i.reply(`🔔 Notifications set to ${mode}`);
-  }
-});
-
-// ---------------- REMINDERS LOOP ----------------
+// ---------------- REMINDERS ----------------
 setInterval(() => {
   db.all("SELECT * FROM reminders", [], (e, rows) => {
     rows.forEach(r => {
-      if (Date.now() >= r.time) {
+      if (Date.now() > r.time) {
         client.users.fetch(r.user_id).then(u => {
-          u.send(`⏰ Reminder: ${r.message}`);
+          u.send(`⏰ ${r.msg}`);
         });
 
-        db.run("DELETE FROM reminders WHERE user_id = ? AND time = ?", [
-          r.user_id,
-          r.time
-        ]);
+        db.run(
+          "DELETE FROM reminders WHERE user_id=? AND time=?",
+          [r.user_id, r.time]
+        );
       }
     });
   });
-}, 60000);
+}, 30000);
 
-// ---------------- START ----------------
-client.once("ready", async () => {
+// ---------------- PANEL COMMAND ----------------
+client.on("messageCreate", (m) => {
+  if (m.content === "/panel") {
+    const row = new ActionRowBuilder().addComponents(
+      new ButtonBuilder()
+        .setCustomId("gaming")
+        .setLabel("🎮 Gaming")
+        .setStyle(ButtonStyle.Primary),
+
+      new ButtonBuilder()
+        .setCustomId("youtube")
+        .setLabel("📺 YouTube")
+        .setStyle(ButtonStyle.Primary),
+
+      new ButtonBuilder()
+        .setCustomId("nfl")
+        .setLabel("🏈 NFL")
+        .setStyle(ButtonStyle.Primary)
+    );
+
+    m.reply({ embeds: [panel()], components: [row] });
+  }
+});
+
+// ---------------- BUTTONS ----------------
+client.on("interactionCreate", async (i) => {
+  if (!i.isButton()) return;
+
+  if (i.customId === "gaming") {
+    return i.reply({ content: "🎮 Gaming Hub (sessions tracked automatically)", ephemeral: true });
+  }
+
+  if (i.customId === "youtube") {
+    db.all("SELECT * FROM youtube", [], (e, rows) => {
+      if (!rows.length) return i.reply("No channels");
+
+      i.reply({
+        content: rows.map(r =>
+          `📺 https://youtube.com/channel/${r.channel_id}`
+        ).join("\n"),
+        ephemeral: true
+      });
+    });
+  }
+
+  if (i.customId === "nfl") {
+    getNFL().then(games => {
+      const msg = games.slice(0, 3).map(g =>
+        `🏈 ${g.team1} ${g.score1} - ${g.score2} ${g.team2} (${g.clock})`
+      ).join("\n");
+
+      i.reply({ content: msg, ephemeral: true });
+    });
+  }
+});
+
+// ---------------- LOGIN ----------------
+client.once("clientReady", () => {
   console.log(`Logged in as ${client.user.tag}`);
-  await register();
 });
 
 client.login(TOKEN);
