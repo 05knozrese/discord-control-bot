@@ -24,7 +24,7 @@ const client = new Client({
   ]
 });
 
-// ---------------- DB TABLE ----------------
+// ---------------- GAMING TABLE ----------------
 db.run(`
 CREATE TABLE IF NOT EXISTS gaming (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -36,7 +36,7 @@ CREATE TABLE IF NOT EXISTS gaming (
 )
 `);
 
-// ---------------- GAMING SESSIONS ----------------
+// ---------------- SESSIONS ----------------
 const sessions = {};
 
 // ---------------- PRESENCE TRACKER ----------------
@@ -48,15 +48,10 @@ client.on("presenceUpdate", (oldP, newP) => {
     const activity = newP.activities?.find(a => a.type === 0);
     const oldActivity = oldP?.activities?.find(a => a.type === 0);
 
-    // START
     if (activity && !oldActivity) {
-      sessions[userId] = {
-        game: activity.name,
-        start: Date.now()
-      };
+      sessions[userId] = { game: activity.name, start: Date.now() };
     }
 
-    // STOP
     if (!activity && oldActivity && sessions[userId]) {
       const s = sessions[userId];
       delete sessions[userId];
@@ -69,7 +64,6 @@ client.on("presenceUpdate", (oldP, newP) => {
       );
     }
 
-    // SWITCH
     if (activity && oldActivity && activity.name !== oldActivity.name) {
       const s = sessions[userId];
 
@@ -82,14 +76,11 @@ client.on("presenceUpdate", (oldP, newP) => {
         );
       }
 
-      sessions[userId] = {
-        game: activity.name,
-        start: Date.now()
-      };
+      sessions[userId] = { game: activity.name, start: Date.now() };
     }
 
-  } catch (err) {
-    console.log("Presence error:", err);
+  } catch (e) {
+    console.log("presence error", e);
   }
 });
 
@@ -106,37 +97,17 @@ function panel() {
     .setColor("Blue");
 }
 
-// ---------------- BUTTONS ----------------
 function buttons() {
   return new ActionRowBuilder().addComponents(
-    new ButtonBuilder()
-      .setCustomId("home")
-      .setLabel("🏠 Home")
-      .setStyle(ButtonStyle.Secondary),
-
-    new ButtonBuilder()
-      .setCustomId("nfl")
-      .setLabel("🏈 NFL")
-      .setStyle(ButtonStyle.Primary),
-
-    new ButtonBuilder()
-      .setCustomId("gaming")
-      .setLabel("🎮 Gaming")
-      .setStyle(ButtonStyle.Success),
-
-    new ButtonBuilder()
-      .setCustomId("youtube")
-      .setLabel("📺 YouTube")
-      .setStyle(ButtonStyle.Danger),
-
-    new ButtonBuilder()
-      .setCustomId("notif")
-      .setLabel("🔔 Alerts")
-      .setStyle(ButtonStyle.Primary)
+    new ButtonBuilder().setCustomId("home").setLabel("🏠 Home").setStyle(ButtonStyle.Secondary),
+    new ButtonBuilder().setCustomId("nfl").setLabel("🏈 NFL").setStyle(ButtonStyle.Primary),
+    new ButtonBuilder().setCustomId("gaming").setLabel("🎮 Gaming").setStyle(ButtonStyle.Success),
+    new ButtonBuilder().setCustomId("youtube").setLabel("📺 YouTube").setStyle(ButtonStyle.Danger),
+    new ButtonBuilder().setCustomId("notif").setLabel("🔔 Alerts").setStyle(ButtonStyle.Primary)
   );
 }
 
-// ---------------- MESSAGE COMMANDS ----------------
+// ---------------- MESSAGE ----------------
 client.on("messageCreate", async (m) => {
   if (m.content === "!panel") {
     return m.reply({
@@ -144,42 +115,21 @@ client.on("messageCreate", async (m) => {
       components: [buttons()]
     });
   }
-
-  if (m.content === "!gaming stats") {
-    db.all(
-      "SELECT * FROM gaming WHERE userId=? ORDER BY id DESC LIMIT 10",
-      [m.author.id],
-      (err, rows) => {
-        let total = 0;
-
-        const list = (rows || []).map(r => {
-          total += r.duration || 0;
-          return `🎮 ${r.game} — ${r.duration || 0} min`;
-        });
-
-        m.reply(
-`🎮 GAMING STATS
-
-⏱ Total: ${total} min
-
-📊 Recent:
-${list.join("\n") || "No activity"}`
-        );
-      }
-    );
-  }
 });
 
-// ---------------- INTERACTIONS ----------------
+// ---------------- INTERACTIONS (FIXED SAFE FLOW) ----------------
 client.on("interactionCreate", async (i) => {
   try {
 
-    // 🔥 YOUTUBE HANDLER (MUST BE FIRST)
-    await youtube.handleInteraction(i, db);
-
+    // IMPORTANT: ONLY HANDLE BUTTONS
     if (!i.isButton()) return;
 
+    // ACK FIRST (prevents interaction failure)
     await i.deferReply({ ephemeral: true });
+
+    // 🔥 YOUTUBE HANDLER FIRST (SAFE)
+    const handled = await youtube.handleInteraction(i, db);
+    if (handled) return;
 
     // HOME
     if (i.customId === "home") {
@@ -196,8 +146,7 @@ client.on("interactionCreate", async (i) => {
 
 ⭐ Favorite: Eagles
 
-📅 Schedule:
-https://www.espn.com/nfl/team/schedule/_/name/phi/philadelphia-eagles`
+📅 https://www.espn.com/nfl/team/schedule/_/name/phi/philadelphia-eagles`
       );
     }
 
@@ -207,34 +156,31 @@ https://www.espn.com/nfl/team/schedule/_/name/phi/philadelphia-eagles`
 `🎮 GAMING TRACKER
 
 ✔ Auto detects Discord activity
-✔ Stores playtime
-✔ Tracks sessions`
+✔ Saves playtime`
       );
     }
 
-    // NOTIFICATIONS
+    // NOTIF
     if (i.customId === "notif") {
       return i.editReply(
-`🔔 NOTIFICATION CENTER
+`🔔 NOTIFICATIONS
 
-Coming soon:
-- NFL score pings
-- YouTube uploads
-- Custom alerts`
+Coming soon`
       );
     }
 
   } catch (err) {
-    console.log(err);
+    console.log("interaction error:", err);
 
-    if (i.deferred || i.replied) {
-      return i.editReply("⚠️ Error");
-    }
+    try {
+      if (i.deferred) {
+        return i.editReply("⚠️ Error occurred");
+      }
+    } catch {}
 
-    return i.reply({
-      content: "⚠️ Failed",
-      ephemeral: true
-    });
+    try {
+      return i.reply({ content: "⚠️ Failed", ephemeral: true });
+    } catch {}
   }
 });
 
