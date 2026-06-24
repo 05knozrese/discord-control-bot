@@ -9,7 +9,7 @@ const users = require("./modules/users");
 const TOKEN = process.env.TOKEN;
 
 if (!TOKEN) {
-  console.error("Missing TOKEN");
+  console.error("❌ Missing TOKEN in environment variables");
   process.exit(1);
 }
 
@@ -22,25 +22,26 @@ const client = new Client({
   partials: [Partials.Channel]
 });
 
-// INIT MODULES
+// ---------------- INIT MODULES ----------------
 nfl.init(client);
 youtube.init(client);
 reminders.init(client);
 users.init(client);
 
-// COMMAND ROUTER
+// ---------------- COMMAND ROUTER ----------------
 client.on("messageCreate", async (m) => {
   if (m.author.bot) return;
 
-  panel.commands(client, m);
-  nfl.commands(client, m);
-  youtube.commands(client, m);
-  reminders.commands(client, m);
-  users.commands(client, m);
+  try {
+    panel.commands(client, m);
+    nfl.commands(client, m);
+    youtube.commands(client, m);
+    reminders.commands(client, m);
+    users.commands(client, m);
 
-  // HELP COMMAND
-  if (m.content === "!help") {
-    return m.reply(
+    // HELP MENU
+    if (m.content === "!help") {
+      return m.reply(
 `📖 COMMANDS
 
 🎛 PANEL
@@ -61,13 +62,16 @@ client.on("messageCreate", async (m) => {
 🔔 SETTINGS
 !ping on
 !ping off
-!me
-`
-    );
+!me`
+      );
+    }
+
+  } catch (e) {
+    console.log("Command error:", e);
   }
 });
 
-// BUTTONS FIX
+// ---------------- BUTTONS (FIXED DASHBOARD) ----------------
 client.on("interactionCreate", async (i) => {
   if (!i.isButton()) return;
 
@@ -75,31 +79,44 @@ client.on("interactionCreate", async (i) => {
     await i.deferReply({ ephemeral: true });
 
     if (i.customId === "nfl") {
-      return i.editReply("🏈 NFL system active");
+      return i.editReply(
+`🏈 NFL DASHBOARD
+
+!nfl → live scores
+!nfl on → auto updates
+!nfl off → stop updates`
+      );
     }
 
     if (i.customId === "yt") {
-      return i.editReply("📺 YouTube system active");
+      return i.editReply(
+`📺 YOUTUBE DASHBOARD
+
+!ytadd <channel_id>
+!ytlist
+
+✔ auto notifications ON`
+      );
     }
 
     if (i.customId === "settings") {
       return i.editReply(
 `⚙️ SETTINGS
 
-🔔 !ping on/off
-👤 !me
-📺 !ytlist
-⏰ !remind`
+!ping on/off
+!remind
+!me`
       );
     }
 
   } catch (e) {
-    console.log(e);
+    console.log("Interaction error:", e);
   }
 });
 
+// ---------------- START ----------------
 client.once("ready", () => {
-  console.log(`✅ V7.2 FULL FIXED ONLINE: ${client.user.tag}`);
+  console.log(`✅ BOT ONLINE: ${client.user.tag}`);
 });
 
 client.login(TOKEN);
