@@ -40,25 +40,39 @@ function getFeed(id, timeout = 10000) {
   });
 }
 
-// safe showModal helper: only call showModal if interaction hasn't been replied/deferred
-async function tryShowModal(i, modal) {
+// Decide how to respond to an interaction safely (update / reply / followUp)
+async function respondInteraction(i, payload, ephemeral = false) {
+  // payload: { content, components }
   try {
-    if (i.replied || i.deferred) {
-      // can't show modal after reply/defer
-      await i.followUp({ content: 'Unable to open modal: interaction already replied. Please try again.', ephemeral: true });
-      return false;
+    // If it's a component interaction and we can update the original message, prefer update
+    if (i.isMessageComponent && i.isMessageComponent() && i.update) {
+      // Only call update if the interaction hasn't been replied to / deferred
+      if (!i.replied && !i.deferred) {
+        await i.update(payload).catch(async (err) => {
+          console.error('i.update failed', err);
+          // fallback to reply or followUp
+          if (!i.replied && !i.deferred) await i.reply({ ...payload, ephemeral }).catch(() => {});
+          else await i.followUp({ ...payload, ephemeral }).catch(() => {});
+        });
+        return;
+      }
+      // already replied/deferred -> use followUp
+      await i.followUp({ ...payload, ephemeral }).catch(() => {});
+      return;
     }
 
-    await i.showModal(modal);
-    return true;
-  } catch (e) {
-    console.error('show modal error', e);
-    try {
-      await i.followUp({ content: 'Failed to open modal (interaction state). Please try again.', ephemeral: true });
-    } catch (err) {
-      console.error('failed to send followUp after modal error', err);
+    // Not a message component or can't update: reply if possible, otherwise followUp
+    if (!i.replied && !i.deferred) {
+      await i.reply({ ...payload, ephemeral }).catch(async (err) => {
+        console.error('i.reply failed', err);
+        // try followUp as last resort
+        try { await i.followUp({ ...payload, ephemeral }); } catch {};
+      });
+    } else {
+      await i.followUp({ ...payload, ephemeral }).catch(() => {});
     }
-    return false;
+  } catch (e) {
+    console.error('respondInteraction error', e);
   }
 }
 
@@ -79,17 +93,10 @@ async function handle(i, db, client) {
         )
       ];
 
-      // update the original message - use update when possible
-      try {
-        if (i.update) await i.update({ content: `📺 YOUTUBE DASHBOARD\n\n${list}`, components });
-        else await i.editReply({ content: `📺 YOUTUBE DASHBOARD\n\n${list}`, components });
-      } catch (e) {
-        // fallback
-        await i.reply({ content: `📺 YOUTUBE DASHBOARD\n\n${list}`, components, ephemeral: true });
-      }
+      await respondInteraction(i, { content: `📺 YOUTUBE DASHBOARD\n\n${list}`, components }, true);
     } catch (e) {
       console.error('youtube dashboard error', e);
-      try { await i.reply({ content: 'Error loading YouTube dashboard', ephemeral: true }); } catch (err) { console.error(err); }
+      await respondInteraction(i, { content: 'Error loading YouTube dashboard' }, true);
     }
     return true;
   }
@@ -104,10 +111,16 @@ async function handle(i, db, client) {
           )
         );
 
-      await tryShowModal(i, modal);
+      // show modal only if possible
+      if (i.replied || i.deferred) {
+        await respondInteraction(i, { content: 'Unable to open modal: interaction already replied. Try again.' }, true);
+        return true;
+      }
+
+      await i.showModal(modal);
     } catch (e) {
       console.error('show modal error', e);
-      try { await i.followUp({ content: 'Failed to open modal', ephemeral: true }); } catch (err) { console.error(err); }
+      try { await respondInteraction(i, { content: 'Failed to open modal', components: [] }, true); } catch (err) { console.error(err); }
     }
 
     return true;
@@ -123,10 +136,15 @@ async function handle(i, db, client) {
           )
         );
 
-      await tryShowModal(i, modal);
+      if (i.replied || i.deferred) {
+        await respondInteraction(i, { content: 'Unable to open modal: interaction already replied. Try again.' }, true);
+        return true;
+      }
+
+      await i.showModal(modal);
     } catch (e) {
       console.error('show modal error', e);
-      try { await i.followUp({ content: 'Failed to open modal', ephemeral: true }); } catch (err) { console.error(err); }
+      try { await respondInteraction(i, { content: 'Failed to open modal', components: [] }, true); } catch (err) { console.error(err); }
     }
 
     return true;
@@ -136,10 +154,10 @@ async function handle(i, db, client) {
   if (i.customId === 'yt_manage') {
     try {
       const alerts = await dbAll(db, "SELECT a.id, a.target_id, a.condition, y.channel_name FROM alerts a LEFT JOIN youtube y ON y.channel_id = a.target_id WHERE a.user_id = ? AND a.type = ?", [i.user.id, 'youtube']);
-      if (!alerts.length) return await (i.update ? i.update({ content: 'You have no YouTube alerts.', components: [], ephemeral: true }) : i.reply({ content: 'You have no YouTube alerts.', ephemeral: true }));
+      if (!alerts.length) return await respondInteraction(i, { content: 'You have no YouTube alerts.', components: [] }, true);
 
       const lines = alerts.map(a => `ID:${a.id} — ${a.channel_name || a.target_id} — ${a.condition}`);
-      // Create buttons for up to 5 alerts (Discord limitation per message)
+      // Create buttons for up to 5 alerts
       const components = [];
       for (const a of alerts.slice(0, 5)) {
         components.push(new ActionRowBuilder().addComponents(
@@ -148,15 +166,10 @@ async function handle(i, db, client) {
         ));
       }
 
-      try {
-        if (i.update) await i.update({ content: `Your alerts:\n${lines.join('\n')}`, components });
-        else await i.reply({ content: `Your alerts:\n${lines.join('\n')}`, components, ephemeral: true });
-      } catch (e) {
-        await i.reply({ content: `Your alerts:\n${lines.join('\n')}`, components, ephemeral: true });
-      }
+      await respondInteraction(i, { content: `Your alerts:\n${lines.join('\n')}`, components }, true);
     } catch (e) {
       console.error('manage alerts error', e);
-      try { await i.reply({ content: 'Failed to load your alerts', ephemeral: true }); } catch (err) { console.error(err); }
+      await respondInteraction(i, { content: 'Failed to load your alerts' }, true);
     }
     return true;
   }
@@ -166,10 +179,10 @@ async function handle(i, db, client) {
     const id = i.customId.replace('yt_alert_del_', '');
     try {
       await dbRun(db, 'DELETE FROM alerts WHERE id = ?', [id]);
-      await i.reply({ content: `Deleted alert ${id}`, ephemeral: true });
+      await respondInteraction(i, { content: `Deleted alert ${id}` }, true);
     } catch (e) {
       console.error('delete alert failed', e);
-      await i.reply({ content: 'Failed to delete alert', ephemeral: true });
+      await respondInteraction(i, { content: 'Failed to delete alert' }, true);
     }
     return true;
   }
@@ -178,20 +191,20 @@ async function handle(i, db, client) {
     const id = i.customId.replace('yt_alert_test_', '');
     try {
       const rows = await dbAll(db, 'SELECT * FROM alerts WHERE id = ?', [id]);
-      if (!rows.length) return await i.reply({ content: 'Alert not found', ephemeral: true });
+      if (!rows.length) return await respondInteraction(i, { content: 'Alert not found' }, true);
       const a = rows[0];
       try {
         const user = await client.users.fetch(a.user_id).catch(() => null);
-        if (user) { await user.send(`🔔 Test alert for ${a.type} ${a.target_id}`); await i.reply({ content: 'Test sent via DM', ephemeral: true }); }
-        else if (a.notify_channel) { const ch = await client.channels.fetch(a.notify_channel).catch(()=>null); if (ch && ch.send) { await ch.send(`🔔 Test alert for ${a.type} ${a.target_id}`); await i.reply({ content: 'Test sent to fallback channel', ephemeral: true }); } else await i.reply({ content: 'No delivery path available', ephemeral: true }); }
-      } catch (e) { console.error('sending test failed', e); await i.reply({ content: 'Failed to send test', ephemeral: true }); }
-    } catch (e) { console.error('alert test error', e); await i.reply({ content: 'Failed to load alert', ephemeral: true }); }
+        if (user) { await user.send(`🔔 Test alert for ${a.type} ${a.target_id}`); await respondInteraction(i, { content: 'Test sent via DM' }, true); }
+        else if (a.notify_channel) { const ch = await client.channels.fetch(a.notify_channel).catch(()=>null); if (ch && ch.send) { await ch.send(`🔔 Test alert for ${a.type} ${a.target_id}`); await respondInteraction(i, { content: 'Test sent to fallback channel' }, true); } else await respondInteraction(i, { content: 'No delivery path available' }, true); }
+      } catch (e) { console.error('sending test failed', e); await respondInteraction(i, { content: 'Failed to send test' }, true); }
+    } catch (e) { console.error('alert test error', e); await respondInteraction(i, { content: 'Failed to load alert' }, true); }
     return true;
   }
 
   // Remove all tracked channels
   if (i.customId === "yt_remove") {
-    try { await dbRun(db, "DELETE FROM youtube"); await i.reply({ content: "🗑 All channels removed", ephemeral: true }); } catch (e) { console.error('Failed to remove youtube channels', e); await i.reply({ content: "Failed to remove channels", ephemeral: true }); }
+    try { await dbRun(db, "DELETE FROM youtube"); await respondInteraction(i, { content: "🗑 All channels removed" }, true); } catch (e) { console.error('Failed to remove youtube channels', e); await respondInteraction(i, { content: "Failed to remove channels" }, true); }
     return true;
   }
 
