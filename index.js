@@ -10,7 +10,7 @@ const {
 const sqlite3 = require("sqlite3").verbose();
 const db = new sqlite3.Database("./bot.db");
 
-// ---------------- MODULES ----------------
+// modules
 const youtube = require("./modules/youtube");
 
 // ---------------- CLIENT ----------------
@@ -24,22 +24,20 @@ const client = new Client({
   ]
 });
 
-// ---------------- GAMING TABLE ----------------
-db.run(`
-CREATE TABLE IF NOT EXISTS gaming (
+// ---------------- DB SAFE INIT ----------------
+db.run(`CREATE TABLE IF NOT EXISTS gaming (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   userId TEXT,
   game TEXT,
   startTime INTEGER,
   endTime INTEGER,
   duration INTEGER DEFAULT 0
-)
-`);
+)`);
 
-// ---------------- SESSIONS ----------------
+// ---------------- SESSION TRACKING ----------------
 const sessions = {};
 
-// ---------------- PRESENCE TRACKER ----------------
+// ---------------- PRESENCE ----------------
 client.on("presenceUpdate", (oldP, newP) => {
   try {
     const userId = newP.userId;
@@ -78,7 +76,6 @@ client.on("presenceUpdate", (oldP, newP) => {
 
       sessions[userId] = { game: activity.name, start: Date.now() };
     }
-
   } catch (e) {
     console.log("presence error", e);
   }
@@ -87,13 +84,8 @@ client.on("presenceUpdate", (oldP, newP) => {
 // ---------------- PANEL ----------------
 function panel() {
   return new EmbedBuilder()
-    .setTitle("🎛 CONTROL PANEL V12")
-    .setDescription(
-`🏈 NFL Dashboard
-🎮 Gaming Tracker
-📺 YouTube Dashboard
-🔔 Notifications`
-    )
+    .setTitle("🎛 CONTROL PANEL V13")
+    .setDescription("🏈 NFL | 🎮 Gaming | 📺 YouTube | 🔔 Alerts")
     .setColor("Blue");
 }
 
@@ -110,90 +102,70 @@ function buttons() {
 // ---------------- MESSAGE ----------------
 client.on("messageCreate", async (m) => {
   if (m.content === "!panel") {
-    return m.reply({
-      embeds: [panel()],
-      components: [buttons()]
-    });
+    return m.reply({ embeds: [panel()], components: [buttons()] });
+  }
+
+  if (m.content === "!gaming stats") {
+    db.all(
+      "SELECT * FROM gaming WHERE userId=? ORDER BY id DESC LIMIT 10",
+      [m.author.id],
+      (err, rows) => {
+        if (err) return m.reply("DB error");
+
+        let total = 0;
+
+        const list = (rows || []).map(r => {
+          total += r.duration || 0;
+          return `🎮 ${r.game} — ${r.duration || 0} min`;
+        });
+
+        m.reply(
+`🎮 GAMING STATS
+
+⏱ Total: ${total} min
+
+${list.join("\n") || "No data"}`
+        );
+      }
+    );
   }
 });
 
-// ---------------- INTERACTIONS (FIXED SAFE FLOW) ----------------
+// ---------------- INTERACTIONS ----------------
 client.on("interactionCreate", async (i) => {
   try {
-
-    // IMPORTANT: ONLY HANDLE BUTTONS
     if (!i.isButton()) return;
 
-    // ACK FIRST (prevents interaction failure)
     await i.deferReply({ ephemeral: true });
 
-    // 🔥 YOUTUBE HANDLER FIRST (SAFE)
-    const handled = await youtube.handleInteraction(i, db);
-    if (handled) return;
+    // FIX: YouTube HANDLER FIRST
+    const yt = await youtube.handle(i, db);
+    if (yt) return;
 
-    // HOME
     if (i.customId === "home") {
-      return i.editReply({
-        embeds: [panel()],
-        components: [buttons()]
-      });
+      return i.editReply({ embeds: [panel()], components: [buttons()] });
     }
 
-    // NFL
     if (i.customId === "nfl") {
-      return i.editReply(
-`🏈 NFL DASHBOARD
-
-⭐ Favorite: Eagles
-
-📅 https://www.espn.com/nfl/team/schedule/_/name/phi/philadelphia-eagles`
-      );
+      return i.editReply("🏈 Eagles Dashboard");
     }
 
-    // GAMING
     if (i.customId === "gaming") {
-      return i.editReply(
-`🎮 GAMING TRACKER
-
-✔ Auto detects Discord activity
-✔ Saves playtime`
-      );
+      return i.editReply("🎮 Gaming tracking active");
     }
 
-    // NOTIF
     if (i.customId === "notif") {
-      return i.editReply(
-`🔔 NOTIFICATIONS
-
-Coming soon`
-      );
+      return i.editReply("🔔 Alerts coming soon");
     }
 
-  } catch (err) {
-    console.log("interaction error:", err);
-
-    try {
-      if (i.deferred) {
-        return i.editReply("⚠️ Error occurred");
-      }
-    } catch {}
-
-    try {
-      return i.reply({ content: "⚠️ Failed", ephemeral: true });
-    } catch {}
+  } catch (e) {
+    console.log("interaction error", e);
+    try { await i.editReply("⚠️ Error"); } catch {}
   }
 });
 
-client.on("messageCreate", (m) => {
-  const youtube = require("./modules/youtube");
-
-  // pass messages into module for add flow
-  youtube.handleInteraction(m);
-});
-
-// ---------------- START ----------------
 client.once("ready", () => {
-  console.log(`✅ ONLINE: ${client.user.tag}`);
+  console.log(`ONLINE ${client.user.tag}`);
 });
 
 client.login(process.env.TOKEN);
