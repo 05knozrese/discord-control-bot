@@ -20,11 +20,10 @@ const client = new Client({
   ]
 });
 
-// ---------------- DB ----------------
+// ---------------- DATABASE ----------------
 const db = new sqlite3.Database("./bot.db");
 
 db.run(`CREATE TABLE IF NOT EXISTS games (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
   user_id TEXT,
   game TEXT,
   minutes INTEGER,
@@ -32,12 +31,24 @@ db.run(`CREATE TABLE IF NOT EXISTS games (
 )`);
 
 db.run(`CREATE TABLE IF NOT EXISTS youtube (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
   guild_id TEXT,
-  channel TEXT
+  channel TEXT,
+  notify_mode TEXT DEFAULT 'ping'
 )`);
 
-// ---------------- TRACKING FIXED ----------------
+db.run(`CREATE TABLE IF NOT EXISTS reminders (
+  user_id TEXT,
+  message TEXT,
+  time INTEGER
+)`);
+
+db.run(`CREATE TABLE IF NOT EXISTS settings (
+  user_id TEXT,
+  youtube_mode TEXT DEFAULT 'ping',
+  nfl_mode TEXT DEFAULT 'ping'
+)`);
+
+// ---------------- GAME TRACKING ----------------
 let sessions = {};
 
 client.on("presenceUpdate", (oldP, newP) => {
@@ -61,7 +72,7 @@ client.on("presenceUpdate", (oldP, newP) => {
     const date = new Date().toISOString().split("T")[0];
 
     db.run(
-      "INSERT INTO games (user_id, game, minutes, date) VALUES (?, ?, ?, ?)",
+      "INSERT INTO games VALUES (?, ?, ?, ?)",
       [userId, s.game, mins, date]
     );
   }
@@ -69,7 +80,7 @@ client.on("presenceUpdate", (oldP, newP) => {
 
 // ---------------- SLASH COMMANDS ----------------
 const commands = [
-  new SlashCommandBuilder().setName("panel").setDescription("Control panel"),
+  new SlashCommandBuilder().setName("panel").setDescription("Open control panel"),
 
   new SlashCommandBuilder().setName("stats").setDescription("Weekly stats"),
 
@@ -77,20 +88,32 @@ const commands = [
 
   new SlashCommandBuilder()
     .setName("profile")
-    .setDescription("View user profile")
-    .addUserOption(o => o.setName("user").setDescription("User")),
+    .setDescription("View profile")
+    .addUserOption(o => o.setName("user")),
 
   new SlashCommandBuilder()
     .setName("ytadd")
     .setDescription("Add YouTube channel")
     .addStringOption(o =>
-      o.setName("channel").setDescription("@handle or URL").setRequired(true)
+      o.setName("channel").setRequired(true)
     ),
 
-  new SlashCommandBuilder().setName("ytlist").setDescription("List YouTube channels")
+  new SlashCommandBuilder()
+    .setName("ytlist")
+    .setDescription("List YouTube channels"),
+
+  new SlashCommandBuilder()
+    .setName("remindme")
+    .setDescription("Set reminder")
+    .addStringOption(o => o.setName("time").setRequired(true))
+    .addStringOption(o => o.setName("message").setRequired(true)),
+
+  new SlashCommandBuilder()
+    .setName("notify")
+    .setDescription("Set notification mode (ping/silent/off)")
 ];
 
-// Register commands
+// ---------------- REGISTER COMMANDS ----------------
 const rest = new REST({ version: "10" }).setToken(TOKEN);
 
 async function register() {
@@ -98,97 +121,148 @@ async function register() {
     Routes.applicationCommands(CLIENT_ID),
     { body: commands }
   );
-  console.log("Slash commands loaded");
+}
+
+// ---------------- PANEL ----------------
+function panelEmbed() {
+  return new EmbedBuilder()
+    .setTitle("🎛 CONTROL PANEL")
+    .setDescription(`
+🎮 Gaming
+📺 YouTube
+🏈 NFL
+🔔 Notifications
+⏰ Reminders
+📊 Stats
+🏆 Leaderboard
+👤 Profile
+`)
+    .setColor("Blue");
 }
 
 // ---------------- COMMANDS ----------------
-client.on("interactionCreate", async interaction => {
-  if (!interaction.isChatInputCommand()) return;
+client.on("interactionCreate", async (i) => {
+  if (!i.isChatInputCommand()) return;
 
-  const { commandName } = interaction;
+  const cmd = i.commandName;
 
-  if (commandName === "panel") {
-    const embed = new EmbedBuilder()
-      .setTitle("🎛 V5 CONTROL PANEL")
-      .setDescription("Everything is inside Discord now")
-      .setColor("Blue");
-
-    return interaction.reply({ embeds: [embed] });
+  if (cmd === "panel") {
+    return i.reply({ embeds: [panelEmbed()] });
   }
 
-  if (commandName === "ytadd") {
-    const channel = interaction.options.getString("channel");
-
-    db.run(
-      "INSERT INTO youtube (guild_id, channel) VALUES (?, ?)",
-      [interaction.guild.id, channel]
-    );
-
-    return interaction.reply("📺 YouTube channel added!");
-  }
-
-  if (commandName === "ytlist") {
+  if (cmd === "stats") {
     db.all(
-      "SELECT channel FROM youtube WHERE guild_id = ?",
-      [interaction.guild.id],
-      (err, rows) => {
-        let text = rows.length
-          ? rows.map(r => `• ${r.channel}`).join("\n")
-          : "No channels.";
-
-        interaction.reply(text);
-      }
-    );
-  }
-
-  if (commandName === "stats") {
-    db.all(
-      `SELECT game, SUM(minutes) as total
+      `SELECT game, SUM(minutes) total
        FROM games
        WHERE date >= date('now','-7 day')
        GROUP BY game
        ORDER BY total DESC`,
       [],
-      (err, rows) => {
-        let text = rows.map(r => `🎮 ${r.game}: ${r.total} min`).join("\n");
-        interaction.reply(text || "No data.");
+      (e, r) => {
+        i.reply(r.map(x => `🎮 ${x.game}: ${x.total}m`).join("\n") || "No data");
       }
     );
   }
 
-  if (commandName === "leaderboard") {
+  if (cmd === "leaderboard") {
     db.all(
-      `SELECT user_id, SUM(minutes) as total
+      `SELECT user_id, SUM(minutes) total
        FROM games
        WHERE date >= date('now','-7 day')
        GROUP BY user_id
        ORDER BY total DESC
        LIMIT 10`,
       [],
-      (err, rows) => {
-        let text = rows
-          .map((r, i) => `${i + 1}. <@${r.user_id}> - ${r.total} min`)
-          .join("\n");
-
-        interaction.reply(text || "No data.");
+      (e, r) => {
+        i.reply(r.map((x, idx) => `${idx+1}. <@${x.user_id}> - ${x.total}m`).join("\n"));
       }
     );
   }
 
-  if (commandName === "profile") {
-    const user = interaction.options.getUser("user") || interaction.user;
+  if (cmd === "profile") {
+    const user = i.options.getUser("user") || i.user;
 
     db.get(
-      "SELECT SUM(minutes) as total FROM games WHERE user_id = ?",
+      `SELECT SUM(minutes) total FROM games WHERE user_id = ?`,
       [user.id],
-      (err, row) => {
-        interaction.reply(
-          `👤 ${user.username}\n🎮 Total: ${row?.total || 0} min`
+      (e, r) => {
+        i.reply(`👤 ${user.username}\n🎮 Total: ${r?.total || 0} min`);
+      }
+    );
+  }
+
+  if (cmd === "ytadd") {
+    const ch = i.options.getString("channel");
+
+    db.run(
+      "INSERT INTO youtube VALUES (?, ?, 'ping')",
+      [i.guild.id, ch]
+    );
+
+    i.reply("📺 Added YouTube channel");
+  }
+
+  if (cmd === "ytlist") {
+    db.all(
+      "SELECT channel FROM youtube WHERE guild_id = ?",
+      [i.guild.id],
+      (e, r) => {
+        if (!r.length) return i.reply("No channels");
+
+        i.reply(
+          r.map(x =>
+            x.channel.startsWith("http")
+              ? `📺 ${x.channel}`
+              : `📺 https://youtube.com/@${x.channel}`
+          ).join("\n")
         );
       }
     );
   }
+
+  if (cmd === "remindme") {
+    const time = i.options.getString("time");
+    const msg = i.options.getString("message");
+
+    const ms = parseInt(time) * 60000;
+
+    db.run(
+      "INSERT INTO reminders VALUES (?, ?, ?)",
+      [i.user.id, msg, Date.now() + ms]
+    );
+
+    i.reply("⏰ Reminder set!");
+  }
+
+  if (cmd === "notify") {
+    const mode = i.options.getString("mode");
+
+    db.run(
+      "INSERT INTO settings VALUES (?, ?, ?)",
+      [i.user.id, mode, mode]
+    );
+
+    i.reply(`🔔 Notifications set to ${mode}`);
+  }
 });
+
+// ---------------- REMINDERS LOOP ----------------
+setInterval(() => {
+  db.all("SELECT * FROM reminders", [], (e, rows) => {
+    rows.forEach(r => {
+      if (Date.now() >= r.time) {
+        client.users.fetch(r.user_id).then(u => {
+          u.send(`⏰ Reminder: ${r.message}`);
+        });
+
+        db.run("DELETE FROM reminders WHERE user_id = ? AND time = ?", [
+          r.user_id,
+          r.time
+        ]);
+      }
+    });
+  });
+}, 60000);
 
 // ---------------- START ----------------
 client.once("ready", async () => {
