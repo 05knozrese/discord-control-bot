@@ -18,7 +18,7 @@ function getFeed(channelId) {
   });
 }
 
-// ---------------- INIT (AUTO UPDATES) ----------------
+// ---------------- INIT AUTO UPDATER ----------------
 function init(client) {
   setInterval(async () => {
     db.all("SELECT * FROM youtube", async (err, rows) => {
@@ -33,7 +33,6 @@ function init(client) {
 
           if (!videoId) continue;
 
-          // prevent duplicate alerts
           if (r.last_video === videoId) continue;
 
           db.run(
@@ -48,7 +47,7 @@ function init(client) {
           if (!channel) continue;
 
           channel.send(
-            `📺 **${r.channel_name}** uploaded a new video:\nhttps://youtube.com/watch?v=${videoId}`
+            `📺 **${r.channel_name}** uploaded:\nhttps://youtube.com/watch?v=${videoId}`
           );
 
         } catch (e) {
@@ -59,76 +58,148 @@ function init(client) {
   }, 60000);
 }
 
-// ---------------- COMMANDS ----------------
-function commands(client, m) {
-  const args = m.content.split(" ");
+// ---------------- PANEL VIEW (USED BY INDEX) ----------------
+function dashboardEmbed(rows) {
+  const list = rows?.length
+    ? rows.map(
+        (r, i) =>
+          `**${i + 1}. ${r.channel_name}**
+📺 https://youtube.com/channel/${r.channel_id}`
+      ).join("\n\n")
+    : "No YouTube channels added";
 
-  // ---------------- ADD CHANNEL ----------------
-  if (args[0] === "!yt" && args[1] === "add") {
-    const id = args[2];
+  return {
+    content:
+`📺 **YOUTUBE DASHBOARD**
 
-    if (!id) {
-      return m.reply("❌ Usage: !yt add CHANNEL_ID");
-    }
+${list}
 
-    getFeed(id)
-      .then((text) => {
-        // 🔥 FIXED NAME PARSING (REAL FIX)
-        let name =
-          text.match(/<title>(.*?)<\/title>/)?.[1] ||
-          text.match(/<name>(.*?)<\/name>/)?.[1] ||
-          "Unknown Channel";
+━━━━━━━━━━━━━━
+Manage your tracked channels below`,
+  };
+}
 
-        name = name.replace(" - YouTube", "").trim();
+// ---------------- INTERACTION HANDLER ----------------
+async function handleInteraction(i, db) {
+  if (!i.isButton()) return;
 
-        const latest =
-          text.match(/<yt:videoId>(.*?)<\/yt:videoId>/)?.[1] || "";
-
-        db.run(
-          `INSERT OR REPLACE INTO youtube
-          (channel_id, channel_name, notify_channel, last_video)
-          VALUES (?,?,?,?)`,
-          [id, name, m.channel.id, latest]
-        );
-
-        m.reply(`✅ Added YouTube channel: **${name}**`);
-      })
-      .catch((err) => {
-        console.log("YT ADD ERROR:", err.message);
-        m.reply("❌ Failed to fetch channel. Check ID.");
-      });
-  }
-
-  // ---------------- LIST CHANNELS ----------------
-  if (args[0] === "!yt" && args[1] === "list") {
+  // OPEN DASHBOARD
+  if (i.customId === "youtube") {
     db.all("SELECT * FROM youtube", (err, rows) => {
-      if (!rows || rows.length === 0) {
-        return m.reply("📺 No YouTube channels added.");
-      }
-
-      m.reply(
-        rows
-          .map(
-            (r, i) =>
-              `**${i + 1}. ${r.channel_name || "Unknown Channel"}**\nhttps://youtube.com/channel/${r.channel_id}`
-          )
-          .join("\n\n")
-      );
+      i.editReply({
+        ...dashboardEmbed(rows),
+        components: [
+          {
+            type: 1,
+            components: [
+              {
+                type: 2,
+                style: 3,
+                label: "➕ Add Channel",
+                custom_id: "yt_add"
+              },
+              {
+                type: 2,
+                style: 4,
+                label: "🗑 Remove Channel",
+                custom_id: "yt_remove"
+              },
+              {
+                type: 2,
+                style: 1,
+                label: "🔄 Refresh",
+                custom_id: "yt_refresh"
+              }
+            ]
+          }
+        ]
+      });
     });
   }
 
-  // ---------------- REMOVE CHANNEL ----------------
-  if (args[0] === "!yt" && args[1] === "remove") {
-    const id = args[2];
+  // REFRESH
+  if (i.customId === "yt_refresh") {
+    db.all("SELECT * FROM youtube", (err, rows) => {
+      i.editReply({
+        ...dashboardEmbed(rows),
+        components: []
+      });
+    });
+  }
 
-    if (!id) {
-      return m.reply("❌ Usage: !yt remove CHANNEL_ID");
-    }
+  // ADD CHANNEL FLOW
+  if (i.customId === "yt_add") {
+    await i.editReply({
+      content: "📺 Send YouTube CHANNEL ID (UCxxxx...)",
+      components: []
+    });
 
-    db.run("DELETE FROM youtube WHERE channel_id=?", [id]);
+    const filter = (m) => m.author.id === i.user.id;
 
-    m.reply("🗑 Removed YouTube channel");
+    const collected = await i.channel
+      .awaitMessages({ filter, max: 1, time: 30000 })
+      .catch(() => null);
+
+    if (!collected) return;
+
+    const id = collected.first().content;
+
+    const text = await getFeed(id);
+
+    let name =
+      text.match(/<title>(.*?)<\/title>/)?.[1] ||
+      text.match(/<name>(.*?)<\/name>/)?.[1] ||
+      "Unknown Channel";
+
+    name = name.replace(" - YouTube", "").trim();
+
+    const video =
+      text.match(/<yt:videoId>(.*?)<\/yt:videoId>/)?.[1] || "";
+
+    db.run(
+      `INSERT OR REPLACE INTO youtube
+      (channel_id, channel_name, notify_channel, last_video)
+      VALUES (?,?,?,?)`,
+      [id, name, i.channel.id, video]
+    );
+
+    return i.followUp(`✅ Added **${name}**`);
+  }
+
+  // REMOVE CHANNEL FLOW
+  if (i.customId === "yt_remove") {
+    db.all("SELECT * FROM youtube", async (err, rows) => {
+      if (!rows?.length) {
+        return i.editReply("❌ No channels to remove");
+      }
+
+      const list = rows
+        .map((r) => `${r.channel_name} (${r.channel_id})`)
+        .join("\n");
+
+      await i.editReply({
+        content:
+`🗑 Send CHANNEL ID to remove:
+
+${list}`,
+        components: []
+      });
+
+      const filter = (m) => m.author.id === i.user.id;
+
+      const collected = await i.channel
+        .awaitMessages({ filter, max: 1, time: 30000 })
+        .catch(() => null);
+
+      if (!collected) return;
+
+      const id = collected.first().content;
+
+      db.run("DELETE FROM youtube WHERE channel_id=?", [id]);
+
+      return i.followUp("🗑 Removed channel");
+    });
   }
 }
 
-module.exports = { init, commands };
+module.exports = { init, handleInteraction };
