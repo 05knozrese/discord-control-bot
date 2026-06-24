@@ -1,6 +1,6 @@
 const https = require("https");
 
-// ---------------- FETCH ----------------
+// ---------------- FEED ----------------
 function getFeed(channelId) {
   return new Promise((resolve, reject) => {
     https.get(
@@ -14,7 +14,10 @@ function getFeed(channelId) {
   });
 }
 
-// ---------------- DASHBOARD HANDLER ----------------
+// ---------------- STATE MEMORY ----------------
+const waiting = new Map();
+
+// ---------------- MAIN HANDLER ----------------
 async function handleInteraction(i, db) {
 
   // OPEN DASHBOARD
@@ -35,9 +38,7 @@ https://youtube.com/channel/${r.channel_id}`
       content:
 `📺 **YOUTUBE DASHBOARD**
 
-${list}
-
-━━━━━━━━━━━━━━`,
+${list}`,
       components: [
         {
           type: 1,
@@ -53,28 +54,26 @@ ${list}
     return true;
   }
 
-  // REFRESH
-  if (i.customId === "yt_refresh") {
-    return true;
-  }
-
-  // ➕ ADD CHANNEL FLOW
+  // ---------------- START ADD FLOW ----------------
   if (i.customId === "yt_add") {
 
+    waiting.set(i.user.id, "add");
+
     await i.editReply({
-      content: "📺 Send YouTube CHANNEL ID (UCxxxx...)",
+      content: "📥 Send YouTube Channel ID (UCxxxx)",
       components: []
     });
 
-    const collected = await i.channel.awaitMessages({
-      filter: m => m.author.id === i.user.id,
-      max: 1,
-      time: 30000
-    }).catch(() => null);
+    return true;
+  }
 
-    if (!collected) return true;
+  // ---------------- MESSAGE INPUT HANDLER ----------------
+  if (waiting.get(i.user.id) === "add") {
 
-    const id = collected.first().content;
+    const id = i.message?.content || i.content;
+    if (!id) return false;
+
+    waiting.delete(i.user.id);
 
     const text = await getFeed(id);
 
@@ -95,45 +94,6 @@ ${list}
     );
 
     await i.followUp(`✅ Added **${name}**`);
-
-    return true;
-  }
-
-  // 🗑 REMOVE CHANNEL FLOW
-  if (i.customId === "yt_remove") {
-
-    const rows = await new Promise(res =>
-      db.all("SELECT * FROM youtube", (e, r) => res(r || []))
-    );
-
-    if (!rows.length) {
-      await i.editReply("❌ No channels to remove");
-      return true;
-    }
-
-    const list = rows.map(r => `${r.channel_name} (${r.channel_id})`).join("\n");
-
-    await i.editReply({
-      content:
-`🗑 Send CHANNEL ID to remove:
-
-${list}`,
-      components: []
-    });
-
-    const collected = await i.channel.awaitMessages({
-      filter: m => m.author.id === i.user.id,
-      max: 1,
-      time: 30000
-    }).catch(() => null);
-
-    if (!collected) return true;
-
-    const id = collected.first().content;
-
-    db.run("DELETE FROM youtube WHERE channel_id=?", [id]);
-
-    await i.followUp("🗑 Removed channel");
 
     return true;
   }
