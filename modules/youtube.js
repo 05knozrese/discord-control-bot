@@ -1,24 +1,21 @@
 const https = require("https");
 
 // ---------------- FEED ----------------
-function getFeed(channelId) {
+function getFeed(id) {
   return new Promise((resolve, reject) => {
     https.get(
-      `https://www.youtube.com/feeds/videos.xml?channel_id=${channelId}`,
+      `https://www.youtube.com/feeds/videos.xml?channel_id=${id}`,
       res => {
-        let data = "";
-        res.on("data", c => data += c);
-        res.on("end", () => resolve(data));
+        let d = "";
+        res.on("data", c => d += c);
+        res.on("end", () => resolve(d));
       }
     ).on("error", reject);
   });
 }
 
-// ---------------- STATE MEMORY ----------------
-const waiting = new Map();
-
-// ---------------- MAIN HANDLER ----------------
-async function handleInteraction(i, db) {
+// ---------------- HANDLE ----------------
+async function handle(i, db) {
 
   // OPEN DASHBOARD
   if (i.customId === "youtube") {
@@ -29,71 +26,77 @@ async function handleInteraction(i, db) {
 
     const list = rows.length
       ? rows.map(r =>
-          `📺 **${r.channel_name}**
-https://youtube.com/channel/${r.channel_id}`
+          `📺 ${r.channel_name}\n${r.channel_id}`
         ).join("\n\n")
-      : "No channels added";
+      : "No channels";
 
-    await i.editReply({
-      content:
-`📺 **YOUTUBE DASHBOARD**
-
-${list}`,
+    return i.editReply({
+      content: `📺 YOUTUBE DASHBOARD\n\n${list}`,
       components: [
         {
           type: 1,
           components: [
-            { type: 2, style: 3, label: "➕ Add", custom_id: "yt_add" },
-            { type: 2, style: 4, label: "🗑 Remove", custom_id: "yt_remove" },
-            { type: 2, style: 1, label: "🔄 Refresh", custom_id: "yt_refresh" }
+            { type: 2, style: 3, label: "Add", custom_id: "yt_add" },
+            { type: 2, style: 4, label: "Remove", custom_id: "yt_remove" },
+            { type: 2, style: 1, label: "Refresh", custom_id: "yt_refresh" }
           ]
         }
       ]
     });
-
-    return true;
   }
 
-  // ---------------- START ADD FLOW ----------------
+  // ADD
   if (i.customId === "yt_add") {
-
-    waiting.set(i.user.id, "add");
-
-    await i.editReply({
-      content: "📥 Send YouTube Channel ID (UCxxxx)",
-      components: []
+    await i.followUp({
+      content: "Send CHANNEL ID now",
+      ephemeral: true
     });
 
-    return true;
-  }
+    const collected = await i.channel.awaitMessages({
+      filter: m => m.author.id === i.user.id,
+      max: 1,
+      time: 30000
+    }).catch(() => null);
 
-  // ---------------- MESSAGE INPUT HANDLER ----------------
-  if (waiting.get(i.user.id) === "add") {
+    if (!collected) return true;
 
-    const id = i.message?.content || i.content;
-    if (!id) return false;
+    const id = collected.first().content;
 
-    waiting.delete(i.user.id);
+    const feed = await getFeed(id);
 
-    const text = await getFeed(id);
-
-    let name =
-      text.match(/<title>(.*?)<\/title>/)?.[1] ||
-      "Unknown Channel";
-
-    name = name.replace(" - YouTube", "").trim();
+    const name =
+      feed.match(/<name>(.*?)<\/name>/)?.[1] || "Unknown";
 
     const video =
-      text.match(/<yt:videoId>(.*?)<\/yt:videoId>/)?.[1] || "";
+      feed.match(/<yt:videoId>(.*?)<\/yt:videoId>/)?.[1] || "";
 
     db.run(
-      `INSERT OR REPLACE INTO youtube
-      (channel_id, channel_name, notify_channel, last_video)
-      VALUES (?,?,?,?)`,
+      `INSERT OR REPLACE INTO youtube (channel_id, channel_name, notify_channel, last_video)
+       VALUES (?,?,?,?)`,
       [id, name, i.channel.id, video]
     );
 
-    await i.followUp(`✅ Added **${name}**`);
+    await i.followUp(`✅ Added ${name}`);
+    return true;
+  }
+
+  // REMOVE
+  if (i.customId === "yt_remove") {
+
+    const rows = await new Promise(res =>
+      db.all("SELECT * FROM youtube", (e, r) => res(r || []))
+    );
+
+    if (!rows.length) {
+      await i.followUp("No channels");
+      return true;
+    }
+
+    const id = rows[0].channel_id;
+
+    db.run("DELETE FROM youtube WHERE channel_id=?", [id]);
+
+    await i.followUp("🗑 Removed first channel (test safe)");
 
     return true;
   }
@@ -101,4 +104,4 @@ ${list}`,
   return false;
 }
 
-module.exports = { handleInteraction };
+module.exports = { handle };
