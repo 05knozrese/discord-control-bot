@@ -10,7 +10,10 @@ const {
 const sqlite3 = require("sqlite3").verbose();
 const db = new sqlite3.Database("./bot.db");
 
-// ---------------- INTENTS ----------------
+// ---------------- MODULES ----------------
+const youtube = require("./modules/youtube");
+
+// ---------------- CLIENT ----------------
 const client = new Client({
   intents: [
     GatewayIntentBits.Guilds,
@@ -21,7 +24,7 @@ const client = new Client({
   ]
 });
 
-// ---------------- DB ----------------
+// ---------------- DATABASE ----------------
 db.run(`
 CREATE TABLE IF NOT EXISTS gaming (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -33,10 +36,22 @@ CREATE TABLE IF NOT EXISTS gaming (
 )
 `);
 
-// ---------------- ACTIVE SESSIONS ----------------
+// (IMPORTANT: YouTube table support)
+db.run(`
+CREATE TABLE IF NOT EXISTS youtube (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  channel_id TEXT UNIQUE,
+  channel_name TEXT,
+  notify_channel TEXT,
+  last_video TEXT,
+  ping INTEGER DEFAULT 1
+)
+`);
+
+// ---------------- GAMING SESSIONS ----------------
 const sessions = {};
 
-// ---------------- AUTO PRESENCE TRACKER ----------------
+// ---------------- PRESENCE TRACKING ----------------
 client.on("presenceUpdate", (oldP, newP) => {
   try {
     const userId = newP.userId;
@@ -45,7 +60,7 @@ client.on("presenceUpdate", (oldP, newP) => {
     const activity = newP.activities?.find(a => a.type === 0);
     const oldActivity = oldP?.activities?.find(a => a.type === 0);
 
-    // START GAME
+    // START
     if (activity && !oldActivity) {
       sessions[userId] = {
         game: activity.name,
@@ -53,7 +68,7 @@ client.on("presenceUpdate", (oldP, newP) => {
       };
     }
 
-    // STOP GAME
+    // STOP
     if (!activity && oldActivity && sessions[userId]) {
       const s = sessions[userId];
       delete sessions[userId];
@@ -66,7 +81,7 @@ client.on("presenceUpdate", (oldP, newP) => {
       );
     }
 
-    // SWITCH GAME
+    // SWITCH
     if (activity && oldActivity && activity.name !== oldActivity.name) {
       const s = sessions[userId];
 
@@ -84,19 +99,20 @@ client.on("presenceUpdate", (oldP, newP) => {
         start: Date.now()
       };
     }
-  } catch (err) {
-    console.log("Presence error:", err);
+
+  } catch (e) {
+    console.log("Presence error:", e);
   }
 });
 
 // ---------------- PANEL ----------------
 function panel() {
   return new EmbedBuilder()
-    .setTitle("🎛 CONTROL PANEL V11")
+    .setTitle("🎛 CONTROL PANEL V12")
     .setDescription(
 `🏈 NFL Dashboard
-🎮 Auto Gaming Tracker
-📺 YouTube Center
+🎮 Gaming Tracker
+📺 YouTube System
 🔔 Notifications`
     )
     .setColor("Blue");
@@ -131,8 +147,17 @@ function buttons() {
   );
 }
 
+// ---------------- READY ----------------
+client.once("ready", () => {
+  console.log(`✅ ONLINE: ${client.user.tag}`);
+
+  youtube.init(client);
+});
+
 // ---------------- MESSAGE COMMANDS ----------------
 client.on("messageCreate", async (m) => {
+  if (m.author.bot) return;
+
   if (m.content === "!panel") {
     return m.reply({
       embeds: [panel()],
@@ -153,17 +178,20 @@ client.on("messageCreate", async (m) => {
           return `🎮 ${r.game} — ${r.duration || 0} min`;
         });
 
-        return m.reply(
-`🎮 AUTO GAMING STATS
+        m.reply(
+`🎮 GAMING STATS
 
 ⏱ Total: ${total} min
 
 📊 Recent:
-${list.join("\n") || "No activity yet"}`
+${list.join("\n") || "No data"}`
         );
       }
     );
   }
+
+  // YOUTUBE COMMANDS (IMPORTANT FIX)
+  youtube.commands(client, m);
 });
 
 // ---------------- BUTTON HANDLER ----------------
@@ -181,7 +209,7 @@ client.on("interactionCreate", async (i) => {
       });
     }
 
-    // NFL (KEEP SIMPLE LIKE YOU WANTED)
+    // NFL
     if (i.customId === "nfl") {
       return i.editReply(
 `🏈 NFL DASHBOARD
@@ -195,65 +223,63 @@ https://www.espn.com/nfl/team/schedule/_/name/phi/philadelphia-eagles
       );
     }
 
-    // GAMING (AUTO SYSTEM)
+    // GAMING
     if (i.customId === "gaming") {
       return i.editReply(
-`🎮 AUTO GAMING TRACKER
+`🎮 GAMING TRACKER
 
-✔ Automatically detects what you play in Discord
+✔ Auto detects what you play
+✔ Saves playtime
+✔ Tracks sessions
 
-📊 Features:
-- Session tracking
-- Playtime logging
-- History saved
-
-⚠️ Requires Presence Intent enabled`
+⚠ Requires Discord Presence`
       );
     }
 
-    // YOUTUBE (SAFE)
+    // YOUTUBE (NOW REAL)
     if (i.customId === "youtube") {
-      return i.editReply(
+
+      db.all("SELECT * FROM youtube", (err, rows) => {
+
+        const list = rows?.length
+          ? rows.map(r => `📺 ${r.channel_name}`).join("\n")
+          : "No channels added";
+
+        i.editReply(
 `📺 YOUTUBE CENTER
 
-⚠️ Not active yet
+Tracked Channels:
+${list}
 
-Next:
-- Channel tracking
-- Upload alerts
-- No duplicate pings`
-      );
+Commands:
+!yt add <channel_id>
+!yt list
+!yt remove <channel_id>`
+        );
+      });
+
+      return;
     }
 
     // NOTIFICATIONS
     if (i.customId === "notif") {
       return i.editReply(
-`🔔 NOTIFICATION CENTER
+`🔔 NOTIFICATIONS
 
 Coming soon:
-- NFL score alerts
-- YouTube uploads
-- Custom pings`
+- YouTube pings
+- NFL alerts
+- Custom triggers`
       );
     }
 
-  } catch (err) {
-    console.log(err);
+  } catch (e) {
+    console.log(e);
 
-    if (i.deferred || i.replied) {
-      return i.editReply("⚠️ Error occurred");
-    }
-
-    return i.reply({
-      content: "⚠️ Interaction failed",
-      ephemeral: true
-    });
+    if (i.deferred) return i.editReply("Error");
+    return i.reply({ content: "Error", ephemeral: true });
   }
 });
 
-// ---------------- START ----------------
-client.once("ready", () => {
-  console.log(`✅ ONLINE: ${client.user.tag}`);
-});
-
+// ---------------- LOGIN ----------------
 client.login(process.env.TOKEN);
