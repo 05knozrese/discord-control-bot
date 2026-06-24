@@ -24,20 +24,22 @@ const client = new Client({
   ]
 });
 
-// ---------------- DB SAFE INIT ----------------
-db.run(`CREATE TABLE IF NOT EXISTS gaming (
+// ---------------- GAMING TABLE ----------------
+db.run(`
+CREATE TABLE IF NOT EXISTS gaming (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   userId TEXT,
   game TEXT,
   startTime INTEGER,
   endTime INTEGER,
   duration INTEGER DEFAULT 0
-)`);
+)
+`);
 
-// ---------------- SESSION TRACKING ----------------
+// ---------------- SESSIONS ----------------
 const sessions = {};
 
-// ---------------- PRESENCE ----------------
+// ---------------- PRESENCE TRACKER ----------------
 client.on("presenceUpdate", (oldP, newP) => {
   try {
     const userId = newP.userId;
@@ -84,22 +86,25 @@ client.on("presenceUpdate", (oldP, newP) => {
 // ---------------- PANEL ----------------
 function panel() {
   return new EmbedBuilder()
-    .setTitle("🎛 CONTROL PANEL V13")
-    .setDescription("🏈 NFL | 🎮 Gaming | 📺 YouTube | 🔔 Alerts")
+    .setTitle("🎛 CONTROL PANEL V14")
+    .setDescription(
+`🎮 Gaming System
+📺 YouTube Dashboard
+🔔 Notifications`
+    )
     .setColor("Blue");
 }
 
 function buttons() {
   return new ActionRowBuilder().addComponents(
     new ButtonBuilder().setCustomId("home").setLabel("🏠 Home").setStyle(ButtonStyle.Secondary),
-    new ButtonBuilder().setCustomId("nfl").setLabel("🏈 NFL").setStyle(ButtonStyle.Primary),
     new ButtonBuilder().setCustomId("gaming").setLabel("🎮 Gaming").setStyle(ButtonStyle.Success),
     new ButtonBuilder().setCustomId("youtube").setLabel("📺 YouTube").setStyle(ButtonStyle.Danger),
     new ButtonBuilder().setCustomId("notif").setLabel("🔔 Alerts").setStyle(ButtonStyle.Primary)
   );
 }
 
-// ---------------- MESSAGE ----------------
+// ---------------- MESSAGES ----------------
 client.on("messageCreate", async (m) => {
   if (m.content === "!panel") {
     return m.reply({ embeds: [panel()], components: [buttons()] });
@@ -138,16 +143,11 @@ client.on("interactionCreate", async (i) => {
 
     await i.deferReply({ ephemeral: true });
 
-    // FIX: YouTube HANDLER FIRST
     const yt = await youtube.handle(i, db);
     if (yt) return;
 
     if (i.customId === "home") {
       return i.editReply({ embeds: [panel()], components: [buttons()] });
-    }
-
-    if (i.customId === "nfl") {
-      return i.editReply("🏈 Eagles Dashboard");
     }
 
     if (i.customId === "gaming") {
@@ -159,11 +159,12 @@ client.on("interactionCreate", async (i) => {
     }
 
   } catch (e) {
-    console.log("interaction error", e);
+    console.log(e);
     try { await i.editReply("⚠️ Error"); } catch {}
   }
 });
 
+// ---------------- START ----------------
 client.once("ready", () => {
   console.log(`ONLINE ${client.user.tag}`);
 });
