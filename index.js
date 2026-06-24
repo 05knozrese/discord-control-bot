@@ -4,11 +4,14 @@ const {
   EmbedBuilder,
   ActionRowBuilder,
   ButtonBuilder,
-  ButtonStyle
+  ButtonStyle,
+  ActivityType
 } = require("discord.js");
 
 const sqlite3 = require("sqlite3").verbose();
-const db = new sqlite3.Database("./bot.db");
+const db = new sqlite3.Database("./bot.db", (err) => {
+  if (err) console.error('Failed to open database', err);
+});
 
 // modules
 const youtube = require("./modules/youtube");
@@ -25,28 +28,46 @@ const client = new Client({
 });
 
 // ---------------- GAMING TABLE ----------------
-db.run(`
-CREATE TABLE IF NOT EXISTS gaming (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  userId TEXT,
-  game TEXT,
-  startTime INTEGER,
-  endTime INTEGER,
-  duration INTEGER DEFAULT 0
-)
-`);
+db.run(
+  `CREATE TABLE IF NOT EXISTS gaming (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    userId TEXT,
+    game TEXT,
+    startTime INTEGER,
+    endTime INTEGER,
+    duration INTEGER DEFAULT 0
+  )`,
+  (e) => { if (e) console.error('Failed to create gaming table', e); }
+);
+
+// ---------------- YOUTUBE TABLE ----------------
+db.run(
+  `CREATE TABLE IF NOT EXISTS youtube (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    channel_id TEXT UNIQUE,
+    channel_name TEXT,
+    notify_channel TEXT,
+    last_video TEXT
+  )`,
+  (e) => { if (e) console.error('Failed to create youtube table', e); }
+);
 
 // ---------------- SESSIONS ----------------
 const sessions = {};
 
+// global error handlers
+process.on('unhandledRejection', (err) => {
+  console.error('Unhandled Rejection:', err);
+});
+
 // ---------------- PRESENCE TRACKER ----------------
-client.on("presenceUpdate", (oldP, newP) => {
+client.on("presenceUpdate", (oldPresence, newPresence) => {
   try {
-    const userId = newP.userId;
+    const userId = newPresence?.userId || newPresence?.user?.id;
     if (!userId) return;
 
-    const activity = newP.activities?.find(a => a.type === 0);
-    const oldActivity = oldP?.activities?.find(a => a.type === 0);
+    const activity = newPresence?.activities?.find(a => a.type === ActivityType.Playing);
+    const oldActivity = oldPresence?.activities?.find(a => a.type === ActivityType.Playing);
 
     if (activity && !oldActivity) {
       sessions[userId] = { game: activity.name, start: Date.now() };
@@ -60,7 +81,8 @@ client.on("presenceUpdate", (oldP, newP) => {
 
       db.run(
         "INSERT INTO gaming (userId, game, startTime, endTime, duration) VALUES (?,?,?,?,?)",
-        [userId, s.game, s.start, Date.now(), duration]
+        [userId, s.game, s.start, Date.now(), duration],
+        (err) => { if (err) console.error('DB insert gaming error', err); }
       );
     }
 
@@ -72,7 +94,8 @@ client.on("presenceUpdate", (oldP, newP) => {
 
         db.run(
           "INSERT INTO gaming (userId, game, startTime, endTime, duration) VALUES (?,?,?,?,?)",
-          [userId, s.game, s.start, Date.now(), duration]
+          [userId, s.game, s.start, Date.now(), duration],
+          (err) => { if (err) console.error('DB insert gaming error', err); }
         );
       }
 
@@ -106,6 +129,9 @@ function buttons() {
 
 // ---------------- MESSAGES ----------------
 client.on("messageCreate", async (m) => {
+  // ignore other bots
+  if (m.author?.bot) return;
+
   if (m.content === "!panel") {
     return m.reply({ embeds: [panel()], components: [buttons()] });
   }
@@ -115,7 +141,10 @@ client.on("messageCreate", async (m) => {
       "SELECT * FROM gaming WHERE userId=? ORDER BY id DESC LIMIT 10",
       [m.author.id],
       (err, rows) => {
-        if (err) return m.reply("DB error");
+        if (err) {
+          console.error('DB error fetching gaming stats', err);
+          return m.reply("DB error");
+        }
 
         let total = 0;
 
@@ -141,10 +170,12 @@ client.on("interactionCreate", async (i) => {
   try {
     if (!i.isButton()) return;
 
+    // For component interactions we can defer the update or the reply.
+    // DeferReply is fine if we plan to use editReply/followUp.
     await i.deferReply({ ephemeral: true });
 
-    const yt = await youtube.handle(i, db);
-    if (yt) return;
+    const handled = await youtube.handle(i, db);
+    if (handled) return;
 
     if (i.customId === "home") {
       return i.editReply({ embeds: [panel()], components: [buttons()] });
@@ -169,4 +200,6 @@ client.once("ready", () => {
   console.log(`ONLINE ${client.user.tag}`);
 });
 
-client.login(process.env.TOKEN);
+client.login(process.env.TOKEN).catch(e => {
+  console.error('Failed to login - check TOKEN env var', e);
+});
