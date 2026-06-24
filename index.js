@@ -15,6 +15,13 @@ const db = new sqlite3.Database("./bot.db", (err) => {
 
 // modules
 const youtube = require("./modules/youtube");
+let nfl;
+try {
+  nfl = require("./modules/nfl");
+} catch (e) {
+  console.warn('NFL module not available:', e && e.message ? e.message : e);
+  nfl = null;
+}
 
 // ---------------- CLIENT ----------------
 const client = new Client({
@@ -64,6 +71,18 @@ db.run(
     created_at INTEGER DEFAULT (strftime('%s','now'))
   )`,
   (e) => { if (e) console.error('Failed to create alerts table', e); }
+);
+
+// NFL favorites table
+db.run(
+  `CREATE TABLE IF NOT EXISTS nfl_favorites (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id TEXT UNIQUE,
+    team_id TEXT,
+    team_name TEXT,
+    created_at INTEGER DEFAULT (strftime('%s','now'))
+  )`,
+  (e) => { if (e) console.error('Failed to create nfl_favorites table', e); }
 );
 
 // ---------------- SESSIONS ----------------
@@ -122,21 +141,26 @@ client.on("presenceUpdate", (oldPresence, newPresence) => {
 
 // ---------------- PANEL ----------------
 function panel() {
+  // If NFL module failed to load, present note in the panel description so users know it's unavailable.
+  const nflAvailable = !!nfl;
   return new EmbedBuilder()
     .setTitle("🎛 CONTROL PANEL V14")
     .setDescription(
 `🎮 Gaming System
 📺 YouTube Dashboard
+🏈 NFL ${nflAvailable ? "" : "(unavailable)"}
 🔔 Notifications`
     )
     .setColor("Blue");
 }
 
 function buttons() {
+  // Always include the NFL button visually; functionality will show a friendly message if module missing.
   return new ActionRowBuilder().addComponents(
     new ButtonBuilder().setCustomId("home").setLabel("🏠 Home").setStyle(ButtonStyle.Secondary),
     new ButtonBuilder().setCustomId("gaming").setLabel("🎮 Gaming").setStyle(ButtonStyle.Success),
     new ButtonBuilder().setCustomId("youtube").setLabel("📺 YouTube").setStyle(ButtonStyle.Danger),
+    new ButtonBuilder().setCustomId("nfl").setLabel("🏈 NFL").setStyle(ButtonStyle.Primary),
     new ButtonBuilder().setCustomId("notif").setLabel("🔔 Alerts").setStyle(ButtonStyle.Primary)
   );
 }
@@ -213,20 +237,34 @@ client.on("interactionCreate", async (i) => {
   try {
     // 1) Modal submits first
     if (i.isModalSubmit && i.isModalSubmit()) {
-      await youtube.handleModal(i, db, client);
-      return;
+      if (i.customId && i.customId.startsWith('modal_yt')) {
+        await youtube.handleModal(i, db, client);
+        return;
+      }
+      if (nfl && i.customId && i.customId.startsWith('modal_nfl')) {
+        await nfl.handleModal(i, db, client);
+        return;
+      }
+      // if nfl not present and user submitted a modal_nfl something, fall through to error replyEphemeral below
     }
 
     // 2) Only handle button interactions here
     if (!i.isButton || !i.isButton()) return;
 
     // Let module handle interactions that may show modals or reply synchronously
-    // IMPORTANT: pass the db and client into the module so it can call showModal before deferral.
-    const handled = await youtube.handle(i, db, client);
-    if (handled) return;
+    const yHandled = await youtube.handle(i, db, client);
+    if (yHandled) return;
+
+    if (nfl) {
+      const nHandled = await nfl.handle(i, db, client);
+      if (nHandled) return;
+    } else if (i.customId === 'nfl') {
+      // NFL button pressed but module missing — inform user briefly
+      await replyEphemeral(i, { content: "NFL features are currently unavailable. The module failed to load on startup." });
+      return;
+    }
 
     // Safe to defer/reply for interactions that require async processing
-    // Use flags instead of ephemeral:true (deprecated)
     await i.deferReply({ flags: EPHEMERAL_FLAG });
 
     if (i.customId === "home") {
@@ -268,6 +306,7 @@ async function start() {
 
   client.once("ready", () => {
     console.log(`ONLINE ${client.user.tag}`);
+    if (!nfl) console.warn('NFL module was not loaded; NFL button will show but functionality is disabled until the module is present.');
   });
 
   client.login(process.env.TOKEN).catch(e => {
