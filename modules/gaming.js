@@ -1,6 +1,11 @@
-const db = require("../db");
+let db;
 
-// START
+// this lets index.js pass the database in
+function init(database) {
+  db = database;
+}
+
+// START SESSION
 function startSession(userId, game) {
   db.run(
     "INSERT INTO gaming (userId, game, startTime) VALUES (?,?,?)",
@@ -8,13 +13,13 @@ function startSession(userId, game) {
   );
 }
 
-// STOP
+// STOP SESSION
 function stopSession(userId, cb) {
   db.get(
     "SELECT * FROM gaming WHERE userId=? ORDER BY id DESC LIMIT 1",
     [userId],
     (err, row) => {
-      if (!row) return cb("❌ No session");
+      if (!row) return cb("❌ No session found");
 
       const mins = Math.floor((Date.now() - row.startTime) / 60000);
 
@@ -36,17 +41,17 @@ function getStats(userId, cb) {
     (err, rows) => {
       let total = 0;
 
-      const list = (rows || []).map(r => {
+      const sessions = (rows || []).map(r => {
         total += r.duration || 0;
         return `🎮 ${r.game} — ${r.duration || 0} min`;
       });
 
       cb({
         total,
-        sessions: list
+        sessions
       });
     }
   );
 }
 
-module.exports = { startSession, stopSession, getStats };
+module.exports = { init, startSession, stopSession, getStats };
