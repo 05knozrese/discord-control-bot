@@ -1,5 +1,12 @@
 const https = require("https");
-const { ActionRowBuilder, ButtonBuilder, ButtonStyle } = require("discord.js");
+const {
+  ActionRowBuilder,
+  ButtonBuilder,
+  ButtonStyle,
+  ModalBuilder,
+  TextInputBuilder,
+  TextInputStyle
+} = require("discord.js");
 
 function dbAll(db, sql, params = []) {
   return new Promise((resolve, reject) => {
@@ -33,6 +40,7 @@ function getFeed(id, timeout = 10000) {
   });
 }
 
+// ---------------- HANDLER ----------------
 async function handle(i, db, client) {
   // Dashboard
   if (i.customId === "youtube") {
@@ -44,8 +52,8 @@ async function handle(i, db, client) {
         new ActionRowBuilder().addComponents(
           new ButtonBuilder().setCustomId("yt_add").setLabel("Add").setStyle(ButtonStyle.Success),
           new ButtonBuilder().setCustomId("yt_subscribe").setLabel("Subscribe").setStyle(ButtonStyle.Primary),
-          new ButtonBuilder().setCustomId("yt_remove").setLabel("Remove All").setStyle(ButtonStyle.Danger),
-          new ButtonBuilder().setCustomId("yt_refresh").setLabel("Refresh").setStyle(ButtonStyle.Secondary)
+          new ButtonBuilder().setCustomId("yt_manage").setLabel("Manage Alerts").setStyle(ButtonStyle.Secondary),
+          new ButtonBuilder().setCustomId("yt_remove").setLabel("Remove All").setStyle(ButtonStyle.Danger)
         )
       ];
 
@@ -57,99 +65,161 @@ async function handle(i, db, client) {
     return true;
   }
 
-  // Add channel
+  // Show modal to add channel
   if (i.customId === "yt_add") {
-    await i.followUp({ content: "Send Channel ID (UC...) in this channel within 60s", ephemeral: true });
-    const channel = i.channel;
-    if (!channel || !channel.awaitMessages) {
-      await i.followUp({ content: "I can't read messages in this channel.", ephemeral: true });
-      return true;
-    }
-
-    const collected = await channel.awaitMessages({ filter: m => m.author.id === i.user.id, max: 1, time: 60000 }).catch(() => null);
-    if (!collected || !collected.size) { await i.followUp({ content: "Timed out", ephemeral: true }); return true; }
-    const id = collected.first().content.trim();
-
-    let feed;
-    try { feed = await getFeed(id); } catch (e) { await i.followUp({ content: "Failed to fetch feed — ensure ID is correct", ephemeral: true }); return true; }
-
-    const name = feed.match(/<name>(.*?)<\/name>/)?.[1] || "Unknown";
-    const video = feed.match(/<yt:videoId>(.*?)<\/yt:videoId>/)?.[1] || "";
-
     try {
-      const existing = await dbAll(db, "SELECT * FROM youtube WHERE channel_id = ?", [id]);
-      if (existing.length) {
-        // add owner to owner_ids
-        const ex = existing[0];
-        const owners = ex.owner_ids ? ex.owner_ids.split(",") : [];
-        if (!owners.includes(i.user.id)) owners.push(i.user.id);
-        await dbRun(db, "UPDATE youtube SET owner_ids = ?, notify_channel = COALESCE(notify_channel, ?) WHERE channel_id = ?", [owners.join(","), i.channel?.id || null, id]);
-      } else {
-        await dbRun(db, "INSERT INTO youtube (channel_id, channel_name, owner_ids, notify_channel, last_video) VALUES (?,?,?,?,?)", [id, name, i.user.id, i.channel?.id || null, video]);
-      }
-      await i.followUp({ content: `✅ Added ${name}`, ephemeral: true });
+      const modal = new ModalBuilder().setCustomId('modal_yt_add').setTitle('Add YouTube Channel')
+        .addComponents(
+          new ActionRowBuilder().addComponents(
+            new TextInputBuilder().setCustomId('channel_id').setLabel('Channel ID (UC...)').setStyle(TextInputStyle.Short).setRequired(true)
+          )
+        );
+
+      await i.showModal(modal);
     } catch (e) {
-      console.error('DB error', e);
-      await i.followUp({ content: 'DB error saving channel', ephemeral: true });
+      console.error('show modal error', e);
+      await i.followUp({ content: 'Failed to open modal', ephemeral: true });
     }
 
     return true;
   }
 
-  // Subscribe to alerts (user-level)
+  // Show modal to subscribe
   if (i.customId === "yt_subscribe") {
-    await i.followUp({ content: "Send Channel ID (UC...) you want to subscribe to (or 'list')", ephemeral: true });
-    const channel = i.channel;
-    if (!channel || !channel.awaitMessages) { await i.followUp({ content: "I can't read messages in this channel.", ephemeral: true }); return true; }
-
-    const collected = await channel.awaitMessages({ filter: m => m.author.id === i.user.id, max: 1, time: 60000 }).catch(() => null);
-    if (!collected || !collected.size) { await i.followUp({ content: "Timed out", ephemeral: true }); return true; }
-    const val = collected.first().content.trim();
-    let targetId = val;
-    if (val.toLowerCase() === 'list') {
-      const rows = await dbAll(db, "SELECT * FROM youtube");
-      if (!rows.length) { await i.followUp({ content: 'No channels tracked', ephemeral: true }); return true; }
-      const pickList = rows.map(r => `${r.channel_id} — ${r.channel_name}`).join('\n');
-      await i.followUp({ content: `Tracked channels:\n${pickList}\nSend channel ID to subscribe`, ephemeral: true });
-      const pick = await channel.awaitMessages({ filter: m => m.author.id === i.user.id, max: 1, time: 60000 }).catch(() => null);
-      if (!pick || !pick.size) { await i.followUp({ content: "Timed out", ephemeral: true }); return true; }
-      targetId = pick.first().content.trim();
-    }
-
-    // ensure channel exists
-    const rows = await dbAll(db, "SELECT * FROM youtube WHERE channel_id = ?", [targetId]);
-    if (!rows.length) { await i.followUp({ content: 'Channel not tracked. Add it first using Add.', ephemeral: true }); return true; }
-
     try {
-      await dbRun(db, "INSERT INTO alerts (user_id, type, target_id, condition, notify_channel) VALUES (?,?,?,?,?)", [i.user.id, 'youtube', targetId, 'new_video', i.channel?.id || null]);
-      await i.followUp({ content: `🔔 Subscribed to ${rows[0].channel_name} new-video alerts`, ephemeral: true });
+      const modal = new ModalBuilder().setCustomId('modal_yt_sub').setTitle('Subscribe to YouTube Channel')
+        .addComponents(
+          new ActionRowBuilder().addComponents(
+            new TextInputBuilder().setCustomId('channel_id').setLabel('Channel ID (UC...) or type "list"').setStyle(TextInputStyle.Short).setRequired(true)
+          )
+        );
+
+      await i.showModal(modal);
     } catch (e) {
-      console.error('Failed to create alert', e);
-      await i.followUp({ content: 'Failed to create subscription', ephemeral: true });
+      console.error('show modal error', e);
+      await i.followUp({ content: 'Failed to open modal', ephemeral: true });
     }
 
+    return true;
+  }
+
+  // Manage alerts
+  if (i.customId === 'yt_manage') {
+    try {
+      const alerts = await dbAll(db, "SELECT a.id, a.target_id, a.condition, y.channel_name FROM alerts a LEFT JOIN youtube y ON y.channel_id = a.target_id WHERE a.user_id = ? AND a.type = ?", [i.user.id, 'youtube']);
+      if (!alerts.length) return await i.editReply({ content: 'You have no YouTube alerts.', ephemeral: true });
+
+      const lines = alerts.map(a => `ID:${a.id} — ${a.channel_name || a.target_id} — ${a.condition}`);
+      // Create buttons for up to 5 alerts (Discord limitation per message)
+      const components = [];
+      for (const a of alerts.slice(0, 5)) {
+        components.push(new ActionRowBuilder().addComponents(
+          new ButtonBuilder().setCustomId(`yt_alert_test_${a.id}`).setLabel(`Test ${a.id}`).setStyle(ButtonStyle.Primary),
+          new ButtonBuilder().setCustomId(`yt_alert_del_${a.id}`).setLabel(`Delete ${a.id}`).setStyle(ButtonStyle.Danger)
+        ));
+      }
+
+      await i.editReply({ content: `Your alerts:\n${lines.join('\n')}`, components, ephemeral: true });
+    } catch (e) {
+      console.error('manage alerts error', e);
+      await i.editReply({ content: 'Failed to load your alerts', ephemeral: true });
+    }
+    return true;
+  }
+
+  // Delete or test alert buttons
+  if (i.customId.startsWith('yt_alert_del_')) {
+    const id = i.customId.replace('yt_alert_del_', '');
+    try {
+      await dbRun(db, 'DELETE FROM alerts WHERE id = ?', [id]);
+      await i.editReply({ content: `Deleted alert ${id}`, ephemeral: true });
+    } catch (e) {
+      console.error('delete alert failed', e);
+      await i.editReply({ content: 'Failed to delete alert', ephemeral: true });
+    }
+    return true;
+  }
+
+  if (i.customId.startsWith('yt_alert_test_')) {
+    const id = i.customId.replace('yt_alert_test_', '');
+    try {
+      const rows = await dbAll(db, 'SELECT * FROM alerts WHERE id = ?', [id]);
+      if (!rows.length) return await i.editReply({ content: 'Alert not found', ephemeral: true });
+      const a = rows[0];
+      try {
+        const user = await client.users.fetch(a.user_id).catch(() => null);
+        if (user) { await user.send(`🔔 Test alert for ${a.type} ${a.target_id}`); await i.editReply({ content: 'Test sent via DM', ephemeral: true }); }
+        else if (a.notify_channel) { const ch = await client.channels.fetch(a.notify_channel).catch(()=>null); if (ch && ch.send) { await ch.send(`🔔 Test alert for ${a.type} ${a.target_id}`); await i.editReply({ content: 'Test sent to fallback channel', ephemeral: true }); } else await i.editReply({ content: 'No delivery path available', ephemeral: true }); }
+      } catch (e) { console.error('sending test failed', e); await i.editReply({ content: 'Failed to send test', ephemeral: true }); }
+    } catch (e) { console.error('alert test error', e); await i.editReply({ content: 'Failed to load alert', ephemeral: true }); }
     return true;
   }
 
   // Remove all tracked channels
   if (i.customId === "yt_remove") {
-    try { await dbRun(db, "DELETE FROM youtube"); await i.followUp({ content: "🗑 All channels removed", ephemeral: true }); } catch (e) { console.error('Failed to remove youtube channels', e); await i.followUp({ content: "Failed to remove channels", ephemeral: true }); }
-    return true;
-  }
-
-  // Refresh (manual)
-  if (i.customId === "yt_refresh") {
-    try {
-      await i.followUp({ content: "Refreshing feeds...", ephemeral: true });
-      const summary = await refreshAll(db, client);
-      await i.followUp({ content: `✅ Refresh complete — checked ${summary.checked} feeds, sent ${summary.notified} notifications${summary.errors.length ? `. Errors: ${summary.errors.join(',')}` : ''}`, ephemeral: true });
-    } catch (e) { console.error('yt_refresh handler error', e); await i.followUp({ content: "Failed to refresh feeds", ephemeral: true }); }
+    try { await dbRun(db, "DELETE FROM youtube"); await i.editReply({ content: "🗑 All channels removed", ephemeral: true }); } catch (e) { console.error('Failed to remove youtube channels', e); await i.editReply({ content: "Failed to remove channels", ephemeral: true }); }
     return true;
   }
 
   return false;
 }
 
+// ---------------- MODAL SUBMIT HANDLERS ----------------
+async function handleModal(i, db, client) {
+  if (i.customId === 'modal_yt_add') {
+    const id = i.fields.getTextInputValue('channel_id').trim();
+    let feed;
+    try { feed = await getFeed(id); } catch (e) { console.error('Failed to fetch feed for modal add', e); return await i.reply({ content: 'Failed to fetch feed — ensure ID is correct', ephemeral: true }); }
+    const name = feed.match(/<name>(.*?)<\/name>/)?.[1] || 'Unknown';
+    const video = feed.match(/<yt:videoId>(.*?)<\/yt:videoId>/)?.[1] || '';
+
+    try {
+      const existing = await dbAll(db, 'SELECT * FROM youtube WHERE channel_id = ?', [id]);
+      if (existing.length) {
+        const ex = existing[0];
+        const owners = ex.owner_ids ? ex.owner_ids.split(',') : [];
+        if (!owners.includes(i.user.id)) owners.push(i.user.id);
+        await dbRun(db, 'UPDATE youtube SET owner_ids = ?, notify_channel = COALESCE(notify_channel, ?) WHERE channel_id = ?', [owners.join(','), i.channel?.id || null, id]);
+      } else {
+        await dbRun(db, 'INSERT INTO youtube (channel_id, channel_name, owner_ids, notify_channel, last_video) VALUES (?,?,?,?,?)', [id, name, i.user.id, i.channel?.id || null, video]);
+      }
+      await i.reply({ content: `✅ Added ${name}`, ephemeral: true });
+    } catch (e) {
+      console.error('DB error modal add', e);
+      await i.reply({ content: 'DB error saving channel', ephemeral: true });
+    }
+    return;
+  }
+
+  if (i.customId === 'modal_yt_sub') {
+    const val = i.fields.getTextInputValue('channel_id').trim();
+    let targetId = val;
+
+    if (val.toLowerCase() === 'list') {
+      const rows = await dbAll(db, 'SELECT * FROM youtube');
+      if (!rows.length) return await i.reply({ content: 'No channels tracked. Add some first.', ephemeral: true });
+      const pickList = rows.map(r => `${r.channel_id} — ${r.channel_name}`).join('\n');
+      return await i.reply({ content: `Tracked channels:\n${pickList}\nTo subscribe, use the Subscribe button again and paste a channel ID from the list.`, ephemeral: true });
+    }
+
+    const rows = await dbAll(db, 'SELECT * FROM youtube WHERE channel_id = ?', [targetId]);
+    if (!rows.length) return await i.reply({ content: 'Channel not tracked. Add it first using Add.', ephemeral: true });
+
+    try {
+      await dbRun(db, 'INSERT INTO alerts (user_id, type, target_id, condition, notify_channel) VALUES (?,?,?,?,?)', [i.user.id, 'youtube', targetId, 'new_video', i.channel?.id || null]);
+      await i.reply({ content: `🔔 Subscribed to ${rows[0].channel_name} new-video alerts`, ephemeral: true });
+    } catch (e) {
+      console.error('Failed to create alert modal', e);
+      await i.reply({ content: 'Failed to create subscription', ephemeral: true });
+    }
+    return;
+  }
+
+  // unknown modal
+  await i.reply({ content: 'Unknown modal submission', ephemeral: true });
+}
+
+// ---------------- REFRESH LOGIC (background poller) ----------------
 async function refreshAll(db, client) {
   const rows = await dbAll(db, "SELECT * FROM youtube");
   let checked = 0, notified = 0, errors = [];
@@ -197,4 +267,4 @@ async function refreshAll(db, client) {
   return { checked, notified, errors };
 }
 
-module.exports = { handle, refreshAll };
+module.exports = { handle, handleModal, refreshAll };
