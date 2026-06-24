@@ -7,7 +7,7 @@ if (fs.existsSync("users.json")) {
 }
 
 function save() {
-  fs.writeFileSync("users.json", JSON.stringify(users));
+  fs.writeFileSync("users.json", JSON.stringify(users, null, 2));
 }
 
 function init() {}
@@ -15,9 +15,7 @@ function init() {}
 function commands(client, m) {
   const id = m.author.id;
 
-  if (!users[id]) {
-    users[id] = { ping: true };
-  }
+  if (!users[id]) users[id] = { ping: true };
 
   if (m.content === "!ping on") {
     users[id].ping = true;
