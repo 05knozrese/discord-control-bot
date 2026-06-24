@@ -36,6 +36,15 @@ CREATE TABLE IF NOT EXISTS gaming (
 )
 `);
 
+
+client.on("messageCreate", (m) => {
+  const youtube = require("./modules/youtube");
+
+  // pass messages into module for add flow
+  youtube.handleInteraction(m);
+});
+
+
 // ---------------- SESSIONS ----------------
 const sessions = {};
 
