@@ -1,36 +1,24 @@
-const fs = require("fs");
-
-let users = {};
-
-if (fs.existsSync("users.json")) {
-  users = JSON.parse(fs.readFileSync("users.json"));
-}
-
-function save() {
-  fs.writeFileSync("users.json", JSON.stringify(users, null, 2));
-}
+const db = require("./db");
 
 function init() {}
 
 function commands(client, m) {
-  const id = m.author.id;
+  const args = m.content.split(" ");
 
-  if (!users[id]) users[id] = { ping: true };
-
-  if (m.content === "!ping on") {
-    users[id].ping = true;
-    save();
+  if (args[0] === "!ping" && args[1] === "on") {
+    db.run("INSERT OR REPLACE INTO users VALUES (?,1)", [m.author.id]);
     return m.reply("🔔 Ping ON");
   }
 
-  if (m.content === "!ping off") {
-    users[id].ping = false;
-    save();
+  if (args[0] === "!ping" && args[1] === "off") {
+    db.run("INSERT OR REPLACE INTO users VALUES (?,0)", [m.author.id]);
     return m.reply("🔕 Ping OFF");
   }
 
-  if (m.content === "!me") {
-    return m.reply(`Ping: ${users[id].ping}`);
+  if (args[0] === "!me") {
+    db.get("SELECT ping FROM users WHERE user_id=?", [m.author.id], (err, row) => {
+      m.reply(`Ping: ${row?.ping ? "ON" : "OFF"}`);
+    });
   }
 }
 
