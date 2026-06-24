@@ -187,14 +187,21 @@ ${list.join("\n") || "No data"}`
 // ---------------- INTERACTIONS ----------------
 client.on("interactionCreate", async (i) => {
   try {
-    if (!i.isButton()) return;
+    // Handle modal submits first
+    if (i.isModalSubmit && i.isModalSubmit()) {
+      await youtube.handleModal(i, db, client);
+      return;
+    }
 
-    // For component interactions we can defer the update or the reply.
-    // DeferReply is fine if we plan to use editReply/followUp.
-    await i.deferReply({ ephemeral: true });
+    // Only handle button interactions here
+    if (!i.isButton || !i.isButton()) return;
 
+    // Let module handle interactions that may show modals or reply synchronously
     const handled = await youtube.handle(i, db, client);
     if (handled) return;
+
+    // Safe to defer/reply for interactions that require async processing
+    await i.deferReply({ ephemeral: true });
 
     if (i.customId === "home") {
       return i.editReply({ embeds: [panel()], components: [buttons()] });
@@ -210,7 +217,7 @@ client.on("interactionCreate", async (i) => {
 
   } catch (e) {
     console.log(e);
-    try { await i.editReply("⚠️ Error"); } catch {}
+    try { if (i.replied || i.deferred) await i.editReply("⚠️ Error"); else await i.reply({ content: "⚠️ Error", ephemeral: true }); } catch {}
   }
 });
 
