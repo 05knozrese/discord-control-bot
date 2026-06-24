@@ -160,6 +160,54 @@ async function replyEphemeral(i, payload) {
   }
 }
 
+// ---------------- MESSAGES ----------------
+client.on("messageCreate", async (m) => {
+  // ignore other bots
+  if (m.author?.bot) return;
+
+  try {
+    if (m.content === "!panel") {
+      try {
+        await m.reply({ embeds: [panel()], components: [buttons()] });
+      } catch (err) {
+        console.error('!panel reply failed, falling back to channel.send', err);
+        try { await m.channel.send({ embeds: [panel()], components: [buttons()] }); } catch (err2) { console.error('Fallback send failed', err2); }
+      }
+      return;
+    }
+
+    if (m.content === "!gaming stats") {
+      db.all(
+        "SELECT * FROM gaming WHERE userId=? ORDER BY id DESC LIMIT 10",
+        [m.author.id],
+        (err, rows) => {
+          if (err) {
+            console.error('DB error fetching gaming stats', err);
+            return m.reply("DB error");
+          }
+
+          let total = 0;
+
+          const list = (rows || []).map(r => {
+            total += r.duration || 0;
+            return `🎮 ${r.game} — ${r.duration || 0} min`;
+          });
+
+          m.reply(
+`🎮 GAMING STATS
+
+⏱ Total: ${total} min
+
+${list.join("\n") || "No data"}`
+          );
+        }
+      );
+    }
+  } catch (e) {
+    console.error('messageCreate handler error', e);
+  }
+});
+
 // ---------------- INTERACTIONS ----------------
 client.on("interactionCreate", async (i) => {
   try {
