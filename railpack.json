@@ -1,4 +1,6 @@
 {
   "$schema": "https://schema.railpack.com",
-  "installCmd": "npm install"
+  "installCmd": "npm install",
+  "buildCmd": "npm install",
+  "startCmd": "npm start"
 }
