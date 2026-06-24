@@ -7,24 +7,26 @@ if (fs.existsSync("reminders.json")) {
 }
 
 function save() {
-  fs.writeFileSync("reminders.json", JSON.stringify(reminders));
+  fs.writeFileSync("reminders.json", JSON.stringify(reminders, null, 2));
 }
 
 function init(client) {
   setInterval(async () => {
     const now = Date.now();
+    const remaining = [];
 
-    reminders = reminders.filter(async (r) => {
+    for (const r of reminders) {
       if (r.time <= now) {
         try {
           const ch = await client.channels.fetch(r.channel);
-          ch.send(`⏰ Reminder: ${r.msg}`);
+          ch.send(`<@${r.user}> ⏰ Reminder: ${r.msg}`);
         } catch {}
-        return false;
+      } else {
+        remaining.push(r);
       }
-      return true;
-    });
+    }
 
+    reminders = remaining;
     save();
   }, 5000);
 }
@@ -42,6 +44,7 @@ function commands(client, m) {
 
     reminders.push({
       channel: m.channel.id,
+      user: m.author.id,
       msg,
       time: Date.now() + ms
     });
