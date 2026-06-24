@@ -36,15 +36,6 @@ CREATE TABLE IF NOT EXISTS gaming (
 )
 `);
 
-
-client.on("messageCreate", (m) => {
-  const youtube = require("./modules/youtube");
-
-  // pass messages into module for add flow
-  youtube.handleInteraction(m);
-});
-
-
 // ---------------- SESSIONS ----------------
 const sessions = {};
 
@@ -191,6 +182,13 @@ Coming soon`
       return i.reply({ content: "⚠️ Failed", ephemeral: true });
     } catch {}
   }
+});
+
+client.on("messageCreate", (m) => {
+  const youtube = require("./modules/youtube");
+
+  // pass messages into module for add flow
+  youtube.handleInteraction(m);
 });
 
 // ---------------- START ----------------
