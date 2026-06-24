@@ -1,251 +1,150 @@
-const db = require("./db");
+const https = require("https");
+const {
+  ActionRowBuilder,
+  ButtonBuilder,
+  ButtonStyle,
+  ModalBuilder,
+  TextInputBuilder,
+  TextInputStyle
+} = require("discord.js");
 
-// ---------------- TEAM MAP ----------------
-const TEAM_MAP = {
-  eagles: "PHI",
-  chiefs: "KC",
-  cowboys: "DAL",
-  giants: "NYG",
-  commanders: "WAS",
-
-  bills: "BUF",
-  dolphins: "MIA",
-  jets: "NYJ",
-  patriots: "NE",
-
-  ravens: "BAL",
-  steelers: "PIT",
-  browns: "CLE",
-  bengals: "CIN",
-
-  colts: "IND",
-  texans: "HOU",
-  jaguars: "JAX",
-  titans: "TEN",
-
-  bears: "CHI",
-  packers: "GB",
-  lions: "DET",
-  vikings: "MIN",
-
-  saints: "NO",
-  buccaneers: "TB",
-  bucs: "TB",
-  falcons: "ATL",
-  panthers: "CAR",
-
-  "49ers": "SF",
-  niners: "SF",
-  seahawks: "SEA",
-  rams: "LAR",
-  cardinals: "ARI"
-};
-
-// ---------------- RESOLVE TEAM ----------------
-function resolveTeam(input) {
-  if (!input) return null;
-  return TEAM_MAP[input.toLowerCase()] || null;
+// helpers for sqlite callbacks
+function dbAll(db, sql, params = []) {
+  return new Promise((resolve, reject) => {
+    db.all(sql, params, (err, rows) => err ? reject(err) : resolve(rows || []));
+  });
+}
+function dbRun(db, sql, params = []) {
+  return new Promise((resolve, reject) => {
+    db.run(sql, params, function (err) {
+      if (err) return reject(err);
+      resolve(this);
+    });
+  });
 }
 
-// ---------------- GET LAST GAMES (FIXED PROPERLY) ----------------
-async function getLastGames(teamInput) {
-  const team = resolveTeam(teamInput);
-
-  if (!team) return "❌ Unknown team";
-
+const EPHEMERAL_FLAG = 64;
+async function replyEphemeral(i, payload) {
   try {
-    const res = await fetch(
-      "https://site.api.espn.com/apis/site/v2/sports/football/nfl/scoreboard"
-    );
-
-    const data = await res.json();
-
-    if (!data?.events?.length) {
-      return "⚠️ No NFL games available";
-    }
-
-    const results = [];
-
-    for (const event of data.events) {
-      const comp = event?.competitions?.[0];
-      if (!comp) continue;
-
-      const c = comp.competitors;
-      if (!c || c.length !== 2) continue;
-
-      const a = c[0];
-      const b = c[1];
-
-      const aTeam = a.team?.abbreviation;
-      const bTeam = b.team?.abbreviation;
-
-      // ONLY include real completed or valid scored games
-      const hasScore =
-        a.score !== undefined &&
-        b.score !== undefined &&
-        a.score !== "" &&
-        b.score !== "";
-
-      if ((aTeam === team || bTeam === team) && hasScore) {
-        results.push(
-          `🏈 ${aTeam} ${a.score} - ${b.score} ${bTeam}`
-        );
-      }
-
-      if (results.length >= 5) break;
-    }
-
-    return results.length
-      ? results.join("\n")
-      : "No recent games found.";
-
-  } catch (err) {
-    console.log("NFL ERROR:", err);
-    return "⚠️ Failed to load NFL data";
-  }
-}
-
-// ---------------- GET TEAM INFO ----------------
-async function getTeamInfo(teamInput) {
-  const team = resolveTeam(teamInput);
-
-  if (!team) return "❌ Unknown team";
-
-  try {
-    const res = await fetch(
-      "https://site.api.espn.com/apis/site/v2/sports/football/nfl/teams"
-    );
-
-    const data = await res.json();
-
-    const teams = data?.sports?.[0]?.leagues?.[0]?.teams;
-    if (!teams) return "⚠️ No team data";
-
-    const match = teams.find(t => t.team.abbreviation === team);
-    if (!match) return "❌ Team not found";
-
-    const info = match.team;
-
-    return (
-`🏈 ${info.displayName}
-
-📊 Record: ${match.record?.items?.[0]?.summary || "N/A"}
-
-🏟 Stadium: ${info.venue?.fullName || "N/A"}
-
-⭐ Conference: ${info.conference?.name || "N/A"}
-
-🔗 https://www.espn.com/nfl/team/_/name/${team}/${info.slug}`
-    );
-
-  } catch (err) {
-    return "⚠️ Failed to load team info";
-  }
-}
-
-// ---------------- STANDINGS ----------------
-async function getStandings() {
-  try {
-    const res = await fetch(
-      "https://site.api.espn.com/apis/site/v2/sports/football/nfl/teams"
-    );
-
-    const data = await res.json();
-
-    const teams = data?.sports?.[0]?.leagues?.[0]?.teams;
-
-    if (!teams) return "⚠️ No standings data";
-
-    return teams
-      .slice(0, 12)
-      .map(t => `🏈 ${t.team.displayName}`)
-      .join("\n");
-
+    if (!i.replied && !i.deferred) await i.reply({ ...payload, flags: EPHEMERAL_FLAG });
+    else await i.followUp({ ...payload, flags: EPHEMERAL_FLAG });
   } catch (e) {
-    return "⚠️ Failed to load standings";
+    console.error('replyEphemeral failed', e);
+    try { if (i.replied || i.deferred) await i.editReply({ content: payload.content || '...' }); } catch {}
   }
 }
 
-// ---------------- COMMANDS ----------------
-function commands(client, m) {
-  const args = m.content.split(" ");
+async function tryShowModal(i, modal) {
+  if (i.replied || i.deferred) {
+    await replyEphemeral(i, { content: 'Unable to open modal: interaction already replied. Please try again.' });
+    return false;
+  }
+  try {
+    await i.showModal(modal);
+    return true;
+  } catch (e) {
+    console.error('showModal error', e);
+    await replyEphemeral(i, { content: 'Failed to open modal. Try again.' });
+    return false;
+  }
+}
 
-  // SET TEAM
-  if (args[0] === "!team" && args[1] === "set") {
-    const team = args[2];
-
-    if (!resolveTeam(team)) {
-      return m.reply("❌ Invalid team (try eagles, chiefs, 49ers)");
+// Minimal NFL module: pick favorite team and manage it.
+// This is intentionally minimal — further features (live games, stats) can be added later.
+async function handle(i, db, client) {
+  if (i.customId === "nfl") {
+    const components = [
+      new ActionRowBuilder().addComponents(
+        new ButtonBuilder().setCustomId("home").setLabel("🏠 Home").setStyle(ButtonStyle.Secondary),
+        new ButtonBuilder().setCustomId("nfl_pick").setLabel("Pick Team").setStyle(ButtonStyle.Success),
+        new ButtonBuilder().setCustomId("nfl_manage").setLabel("My Team").setStyle(ButtonStyle.Primary)
+      )
+    ];
+    const content = "🏈 NFL DASHBOARD\n\nPick a favorite team to track. (Basic flow)";
+    try {
+      if (i.update && !i.replied && !i.deferred) await i.update({ content, components });
+      else await replyEphemeral(i, { content, components });
+    } catch (e) {
+      console.error('nfl dashboard error', e);
+      await replyEphemeral(i, { content: 'Error opening NFL dashboard' });
     }
-
-    db.run("INSERT OR REPLACE INTO nfl VALUES (?,?)", [
-      m.author.id,
-      team.toLowerCase()
-    ]);
-
-    return m.reply(`🏈 Favorite team set to **${team}**`);
+    return true;
   }
 
-  // LAST GAMES
-  if (args[0] === "!team" && args[1] === "last") {
-    db.get("SELECT team FROM nfl WHERE user_id=?", [m.author.id], async (err, row) => {
-      if (!row) return m.reply("❌ No team set");
-
-      const games = await getLastGames(row.team);
-
-      return m.reply(
-`🏈 LAST 5 GAMES (${row.team.toUpperCase()})
-
-${games}`
+  if (i.customId === "nfl_pick") {
+    const modal = new ModalBuilder().setCustomId('modal_nfl_pick').setTitle('Pick Favorite NFL Team')
+      .addComponents(
+        new ActionRowBuilder().addComponents(
+          new TextInputBuilder().setCustomId('team').setLabel('Team name or abbreviation (e.g., NE, Patriots)').setStyle(TextInputStyle.Short).setRequired(true)
+        )
       );
-    });
+    await tryShowModal(i, modal);
+    return true;
   }
 
-  // DASHBOARD
-  if (args[0] === "!team" && args[1] === "dashboard") {
-    db.get("SELECT team FROM nfl WHERE user_id=?", [m.author.id], async (err, row) => {
-      if (!row) return m.reply("❌ No team set");
-
-      const info = await getTeamInfo(row.team);
-      const games = await getLastGames(row.team);
-
-      return m.reply(
-`🏈 NFL DASHBOARD
-
-⭐ TEAM INFO:
-${info}
-
-📊 LAST GAMES:
-${games}
-
-⚡ Commands:
-!team set eagles
-!team last
-!standings`
-      );
-    });
+  if (i.customId === "nfl_manage") {
+    try {
+      const rows = await dbAll(db, "SELECT * FROM nfl_favorites WHERE user_id = ?", [i.user.id]);
+      if (!rows.length) return await replyEphemeral(i, { content: 'You have no favorite team set. Use Pick Team to choose one.' });
+      const fav = rows[0];
+      const components = [new ActionRowBuilder().addComponents(
+        new ButtonBuilder().setCustomId('nfl_remove').setLabel('Remove Favorite').setStyle(ButtonStyle.Danger),
+        new ButtonBuilder().setCustomId('nfl_refresh_team').setLabel('Refresh Team Info').setStyle(ButtonStyle.Secondary)
+      )];
+      await replyEphemeral(i, { content: `Your favorite team: ${fav.team_name} (${fav.team_id})`, components });
+    } catch (e) {
+      console.error('nfl manage error', e);
+      await replyEphemeral(i, { content: 'Failed to load your favorite team' });
+    }
+    return true;
   }
 
-  // QUICK VIEW
-  if (args[0] === "!nfl") {
-    db.get("SELECT team FROM nfl WHERE user_id=?", [m.author.id], async (err, row) => {
-      if (!row) return m.reply("Set team first: !team set eagles");
-
-      const games = await getLastGames(row.team);
-
-      return m.reply(`🏈 ${row.team.toUpperCase()}\n\n${games}`);
-    });
+  if (i.customId === 'nfl_remove') {
+    try {
+      await dbRun(db, "DELETE FROM nfl_favorites WHERE user_id = ?", [i.user.id]);
+      await replyEphemeral(i, { content: 'Favorite team removed' });
+    } catch (e) {
+      console.error('nfl remove failed', e);
+      await replyEphemeral(i, { content: 'Failed to remove favorite' });
+    }
+    return true;
   }
 
-  // STANDINGS
-  if (args[0] === "!standings") {
-    getStandings().then(data => {
-      m.reply(`📊 NFL STANDINGS\n\n${data}`);
-    });
+  if (i.customId === 'nfl_refresh_team') {
+    try {
+      const rows = await dbAll(db, "SELECT * FROM nfl_favorites WHERE user_id = ?", [i.user.id]);
+      if (!rows.length) return await replyEphemeral(i, { content: 'No favorite set' });
+      const fav = rows[0];
+      await replyEphemeral(i, { content: `Team ${fav.team_name} (${fav.team_id}) — (stats not yet implemented)` });
+    } catch (e) {
+      console.error('nfl refresh failed', e);
+      await replyEphemeral(i, { content: 'Failed to refresh team info' });
+    }
+    return true;
   }
+
+  return false;
 }
 
-// ---------------- INIT ----------------
-function init() {}
+async function handleModal(i, db, client) {
+  if (i.customId === 'modal_nfl_pick') {
+    const team = i.fields.getTextInputValue('team').trim();
+    try {
+      const existing = await dbAll(db, "SELECT * FROM nfl_favorites WHERE user_id = ?", [i.user.id]);
+      if (existing.length) {
+        await dbRun(db, "UPDATE nfl_favorites SET team_id = ?, team_name = ? WHERE user_id = ?", [team, team, i.user.id]);
+      } else {
+        await dbRun(db, "INSERT INTO nfl_favorites (user_id, team_id, team_name) VALUES (?,?,?)", [i.user.id, team, team]);
+      }
+      await replyEphemeral(i, { content: `✅ Saved favorite team: ${team}` });
+    } catch (e) {
+      console.error('nfl modal save failed', e);
+      await replyEphemeral(i, { content: 'Failed to save favorite team' });
+    }
+    return;
+  }
 
-module.exports = { init, commands };
+  await replyEphemeral(i, { content: 'Unknown modal' });
+}
+
+module.exports = { handle, handleModal };
