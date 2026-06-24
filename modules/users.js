@@ -1,25 +1,39 @@
-const settings = {};
+const fs = require("fs");
+
+let users = {};
+
+if (fs.existsSync("users.json")) {
+  users = JSON.parse(fs.readFileSync("users.json"));
+}
+
+function save() {
+  fs.writeFileSync("users.json", JSON.stringify(users));
+}
+
+function init() {}
 
 function commands(client, m) {
   const id = m.author.id;
 
-  if (!settings[id]) {
-    settings[id] = { ping: true };
+  if (!users[id]) {
+    users[id] = { ping: true };
   }
 
   if (m.content === "!ping on") {
-    settings[id].ping = true;
+    users[id].ping = true;
+    save();
     return m.reply("🔔 Ping ON");
   }
 
   if (m.content === "!ping off") {
-    settings[id].ping = false;
+    users[id].ping = false;
+    save();
     return m.reply("🔕 Ping OFF");
   }
 
   if (m.content === "!me") {
-    return m.reply(`Ping mode: ${settings[id].ping}`);
+    return m.reply(`Ping: ${users[id].ping}`);
   }
 }
 
-module.exports = { commands };
+module.exports = { init, commands };
