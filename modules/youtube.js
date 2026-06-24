@@ -40,6 +40,28 @@ function getFeed(id, timeout = 10000) {
   });
 }
 
+// safe showModal helper: only call showModal if interaction hasn't been replied/deferred
+async function tryShowModal(i, modal) {
+  try {
+    if (i.replied || i.deferred) {
+      // can't show modal after reply/defer
+      await i.followUp({ content: 'Unable to open modal: interaction already replied. Please try again.', ephemeral: true });
+      return false;
+    }
+
+    await i.showModal(modal);
+    return true;
+  } catch (e) {
+    console.error('show modal error', e);
+    try {
+      await i.followUp({ content: 'Failed to open modal (interaction state). Please try again.', ephemeral: true });
+    } catch (err) {
+      console.error('failed to send followUp after modal error', err);
+    }
+    return false;
+  }
+}
+
 // ---------------- HANDLER ----------------
 async function handle(i, db, client) {
   // Dashboard
@@ -57,10 +79,17 @@ async function handle(i, db, client) {
         )
       ];
 
-      await i.editReply({ content: `📺 YOUTUBE DASHBOARD\n\n${list}`, components });
+      // update the original message - use update when possible
+      try {
+        if (i.update) await i.update({ content: `📺 YOUTUBE DASHBOARD\n\n${list}`, components });
+        else await i.editReply({ content: `📺 YOUTUBE DASHBOARD\n\n${list}`, components });
+      } catch (e) {
+        // fallback
+        await i.reply({ content: `📺 YOUTUBE DASHBOARD\n\n${list}`, components, ephemeral: true });
+      }
     } catch (e) {
       console.error('youtube dashboard error', e);
-      await i.editReply({ content: 'Error loading YouTube dashboard' });
+      try { await i.reply({ content: 'Error loading YouTube dashboard', ephemeral: true }); } catch (err) { console.error(err); }
     }
     return true;
   }
@@ -75,10 +104,10 @@ async function handle(i, db, client) {
           )
         );
 
-      await i.showModal(modal);
+      await tryShowModal(i, modal);
     } catch (e) {
       console.error('show modal error', e);
-      await i.followUp({ content: 'Failed to open modal', ephemeral: true });
+      try { await i.followUp({ content: 'Failed to open modal', ephemeral: true }); } catch (err) { console.error(err); }
     }
 
     return true;
@@ -94,10 +123,10 @@ async function handle(i, db, client) {
           )
         );
 
-      await i.showModal(modal);
+      await tryShowModal(i, modal);
     } catch (e) {
       console.error('show modal error', e);
-      await i.followUp({ content: 'Failed to open modal', ephemeral: true });
+      try { await i.followUp({ content: 'Failed to open modal', ephemeral: true }); } catch (err) { console.error(err); }
     }
 
     return true;
@@ -107,7 +136,7 @@ async function handle(i, db, client) {
   if (i.customId === 'yt_manage') {
     try {
       const alerts = await dbAll(db, "SELECT a.id, a.target_id, a.condition, y.channel_name FROM alerts a LEFT JOIN youtube y ON y.channel_id = a.target_id WHERE a.user_id = ? AND a.type = ?", [i.user.id, 'youtube']);
-      if (!alerts.length) return await i.editReply({ content: 'You have no YouTube alerts.', ephemeral: true });
+      if (!alerts.length) return await (i.update ? i.update({ content: 'You have no YouTube alerts.', components: [], ephemeral: true }) : i.reply({ content: 'You have no YouTube alerts.', ephemeral: true }));
 
       const lines = alerts.map(a => `ID:${a.id} — ${a.channel_name || a.target_id} — ${a.condition}`);
       // Create buttons for up to 5 alerts (Discord limitation per message)
@@ -119,10 +148,15 @@ async function handle(i, db, client) {
         ));
       }
 
-      await i.editReply({ content: `Your alerts:\n${lines.join('\n')}`, components, ephemeral: true });
+      try {
+        if (i.update) await i.update({ content: `Your alerts:\n${lines.join('\n')}`, components });
+        else await i.reply({ content: `Your alerts:\n${lines.join('\n')}`, components, ephemeral: true });
+      } catch (e) {
+        await i.reply({ content: `Your alerts:\n${lines.join('\n')}`, components, ephemeral: true });
+      }
     } catch (e) {
       console.error('manage alerts error', e);
-      await i.editReply({ content: 'Failed to load your alerts', ephemeral: true });
+      try { await i.reply({ content: 'Failed to load your alerts', ephemeral: true }); } catch (err) { console.error(err); }
     }
     return true;
   }
@@ -132,10 +166,10 @@ async function handle(i, db, client) {
     const id = i.customId.replace('yt_alert_del_', '');
     try {
       await dbRun(db, 'DELETE FROM alerts WHERE id = ?', [id]);
-      await i.editReply({ content: `Deleted alert ${id}`, ephemeral: true });
+      await i.reply({ content: `Deleted alert ${id}`, ephemeral: true });
     } catch (e) {
       console.error('delete alert failed', e);
-      await i.editReply({ content: 'Failed to delete alert', ephemeral: true });
+      await i.reply({ content: 'Failed to delete alert', ephemeral: true });
     }
     return true;
   }
@@ -144,20 +178,20 @@ async function handle(i, db, client) {
     const id = i.customId.replace('yt_alert_test_', '');
     try {
       const rows = await dbAll(db, 'SELECT * FROM alerts WHERE id = ?', [id]);
-      if (!rows.length) return await i.editReply({ content: 'Alert not found', ephemeral: true });
+      if (!rows.length) return await i.reply({ content: 'Alert not found', ephemeral: true });
       const a = rows[0];
       try {
         const user = await client.users.fetch(a.user_id).catch(() => null);
-        if (user) { await user.send(`🔔 Test alert for ${a.type} ${a.target_id}`); await i.editReply({ content: 'Test sent via DM', ephemeral: true }); }
-        else if (a.notify_channel) { const ch = await client.channels.fetch(a.notify_channel).catch(()=>null); if (ch && ch.send) { await ch.send(`🔔 Test alert for ${a.type} ${a.target_id}`); await i.editReply({ content: 'Test sent to fallback channel', ephemeral: true }); } else await i.editReply({ content: 'No delivery path available', ephemeral: true }); }
-      } catch (e) { console.error('sending test failed', e); await i.editReply({ content: 'Failed to send test', ephemeral: true }); }
-    } catch (e) { console.error('alert test error', e); await i.editReply({ content: 'Failed to load alert', ephemeral: true }); }
+        if (user) { await user.send(`🔔 Test alert for ${a.type} ${a.target_id}`); await i.reply({ content: 'Test sent via DM', ephemeral: true }); }
+        else if (a.notify_channel) { const ch = await client.channels.fetch(a.notify_channel).catch(()=>null); if (ch && ch.send) { await ch.send(`🔔 Test alert for ${a.type} ${a.target_id}`); await i.reply({ content: 'Test sent to fallback channel', ephemeral: true }); } else await i.reply({ content: 'No delivery path available', ephemeral: true }); }
+      } catch (e) { console.error('sending test failed', e); await i.reply({ content: 'Failed to send test', ephemeral: true }); }
+    } catch (e) { console.error('alert test error', e); await i.reply({ content: 'Failed to load alert', ephemeral: true }); }
     return true;
   }
 
   // Remove all tracked channels
   if (i.customId === "yt_remove") {
-    try { await dbRun(db, "DELETE FROM youtube"); await i.editReply({ content: "🗑 All channels removed", ephemeral: true }); } catch (e) { console.error('Failed to remove youtube channels', e); await i.editReply({ content: "Failed to remove channels", ephemeral: true }); }
+    try { await dbRun(db, "DELETE FROM youtube"); await i.reply({ content: "🗑 All channels removed", ephemeral: true }); } catch (e) { console.error('Failed to remove youtube channels', e); await i.reply({ content: "Failed to remove channels", ephemeral: true }); }
     return true;
   }
 
