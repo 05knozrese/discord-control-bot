@@ -27,7 +27,7 @@ const client = new Client({
   ]
 });
 
-// ---------------- GAMING TABLE ----------------
+// ---------------- MIGRATIONS / TABLES ----------------
 db.run(
   `CREATE TABLE IF NOT EXISTS gaming (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -40,7 +40,6 @@ db.run(
   (e) => { if (e) console.error('Failed to create gaming table', e); }
 );
 
-// ---------------- YOUTUBE TABLE ----------------
 db.run(
   `CREATE TABLE IF NOT EXISTS youtube (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -53,7 +52,6 @@ db.run(
   (e) => { if (e) console.error('Failed to create youtube table', e); }
 );
 
-// ---------------- ALERTS TABLE ----------------
 db.run(
   `CREATE TABLE IF NOT EXISTS alerts (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -129,9 +127,7 @@ function panel() {
     .setDescription(
 `🎮 Gaming System
 📺 YouTube Dashboard
-🏈 NFL
-🔔 Alerts
-📊 Analytics`
+🔔 Notifications`
     )
     .setColor("Blue");
 }
@@ -141,67 +137,49 @@ function buttons() {
     new ButtonBuilder().setCustomId("home").setLabel("🏠 Home").setStyle(ButtonStyle.Secondary),
     new ButtonBuilder().setCustomId("gaming").setLabel("🎮 Gaming").setStyle(ButtonStyle.Success),
     new ButtonBuilder().setCustomId("youtube").setLabel("📺 YouTube").setStyle(ButtonStyle.Danger),
-    new ButtonBuilder().setCustomId("nfl").setLabel("🏈 NFL").setStyle(ButtonStyle.Primary),
     new ButtonBuilder().setCustomId("notif").setLabel("🔔 Alerts").setStyle(ButtonStyle.Primary)
   );
 }
 
-// ---------------- MESSAGES ----------------
-client.on("messageCreate", async (m) => {
-  // ignore other bots
-  if (m.author?.bot) return;
+// ---------------- INTERACTION HELPERS ----------------
+const EPHEMERAL_FLAG = 64;
 
-  if (m.content === "!panel") {
-    return m.reply({ embeds: [panel()], components: [buttons()] });
+async function replyEphemeral(i, payload) {
+  // payload: { content, components, embeds, etc. }
+  try {
+    if (!i.replied && !i.deferred) {
+      await i.reply({ ...payload, flags: EPHEMERAL_FLAG });
+    } else {
+      await i.followUp({ ...payload, flags: EPHEMERAL_FLAG });
+    }
+  } catch (e) {
+    console.error('replyEphemeral failed', e);
+    try {
+      if (i.replied || i.deferred) await i.editReply({ content: payload.content || '...' });
+    } catch (err) { /* ignore */ }
   }
-
-  if (m.content === "!gaming stats") {
-    db.all(
-      "SELECT * FROM gaming WHERE userId=? ORDER BY id DESC LIMIT 10",
-      [m.author.id],
-      (err, rows) => {
-        if (err) {
-          console.error('DB error fetching gaming stats', err);
-          return m.reply("DB error");
-        }
-
-        let total = 0;
-
-        const list = (rows || []).map(r => {
-          total += r.duration || 0;
-          return `🎮 ${r.game} — ${r.duration || 0} min`;
-        });
-
-        m.reply(
-`🎮 GAMING STATS
-
-⏱ Total: ${total} min
-
-${list.join("\n") || "No data"}`
-        );
-      }
-    );
-  }
-});
+}
 
 // ---------------- INTERACTIONS ----------------
 client.on("interactionCreate", async (i) => {
   try {
-    // Handle modal submits first
+    // 1) Modal submits first
     if (i.isModalSubmit && i.isModalSubmit()) {
       await youtube.handleModal(i, db, client);
       return;
     }
 
-    // Only handle button interactions here
+    // 2) Only handle button interactions here
     if (!i.isButton || !i.isButton()) return;
 
     // Let module handle interactions that may show modals or reply synchronously
+    // IMPORTANT: pass the db and client into the module so it can call showModal before deferral.
     const handled = await youtube.handle(i, db, client);
     if (handled) return;
 
     // Safe to defer/reply for interactions that require async processing
-    await i.deferReply({ ephemeral: true });
+    // Use flags instead of ephemeral:true (deprecated)
+    await i.deferReply({ flags: EPHEMERAL_FLAG });
 
     if (i.customId === "home") {
       return i.editReply({ embeds: [panel()], components: [buttons()] });
@@ -216,8 +194,11 @@ client.on("interactionCreate", async (i) => {
     }
 
   } catch (e) {
-    console.log(e);
-    try { if (i.replied || i.deferred) await i.editReply("⚠️ Error"); else await i.reply({ content: "⚠️ Error", ephemeral: true }); } catch {}
+    console.log('interactionCreate error', e);
+    try {
+      if (i.replied || i.deferred) await i.editReply({ content: "⚠️ Error", flags: EPHEMERAL_FLAG });
+      else await i.reply({ content: "⚠️ Error", flags: EPHEMERAL_FLAG });
+    } catch (err) { /* ignore */ }
   }
 });
 
