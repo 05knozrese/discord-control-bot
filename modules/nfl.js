@@ -18,7 +18,7 @@ const TEAM_MAP = {
   browns: "Cleveland Browns",
   bengals: "Cincinnati Bengals",
 
-  49ers: "San Francisco 49ers",
+  "49ers": "San Francisco 49ers",
   niners: "San Francisco 49ers",
   packers: "Green Bay Packers",
   lions: "Detroit Lions",
