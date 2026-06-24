@@ -11,6 +11,11 @@ const sqlite3 = require("sqlite3").verbose();
 
 const TOKEN = process.env.TOKEN;
 
+if (!TOKEN) {
+  console.error("❌ Missing TOKEN in environment variables");
+  process.exit(1);
+}
+
 const client = new Client({
   intents: [
     GatewayIntentBits.Guilds,
@@ -21,7 +26,7 @@ const client = new Client({
   ]
 });
 
-// ---------------- DB ----------------
+// ---------------- DATABASE ----------------
 const db = new sqlite3.Database("./bot.db");
 
 db.run(`CREATE TABLE IF NOT EXISTS games (
@@ -31,20 +36,13 @@ db.run(`CREATE TABLE IF NOT EXISTS games (
   date TEXT
 )`);
 
-db.run(`CREATE TABLE IF NOT EXISTS youtube (
-  guild_id TEXT,
-  channel_id TEXT,
-  last_video TEXT,
-  mode TEXT DEFAULT 'ping'
-)`);
-
 db.run(`CREATE TABLE IF NOT EXISTS reminders (
   user_id TEXT,
   msg TEXT,
   time INTEGER
 )`);
 
-// ---------------- SESSION TRACKING ----------------
+// ---------------- GAME TRACKING ----------------
 let sessions = {};
 
 client.on("presenceUpdate", (oldP, newP) => {
@@ -81,18 +79,19 @@ function panel() {
   return new EmbedBuilder()
     .setTitle("🎛 CONTROL HUB")
     .setDescription(`
-🎮 Gaming
-📺 YouTube
-🏈 NFL
-🔔 Notifications
+🎮 Gaming Tracker
+📺 YouTube (RSS)
+🏈 NFL (ESPN Live)
 ⏰ Reminders
 📊 Stats
 `)
     .setColor("Blue");
 }
 
-// ---------------- MESSAGE COMMAND ----------------
+// ---------------- COMMAND ----------------
 client.on("messageCreate", async (m) => {
+  if (m.author.bot) return;
+
   if (m.content === "/panel") {
     const row = new ActionRowBuilder().addComponents(
       new ButtonBuilder()
@@ -118,43 +117,77 @@ client.on("messageCreate", async (m) => {
   }
 });
 
-// ---------------- BUTTONS (FIXED SAFE REPLIES) ----------------
+// ---------------- NFL (REAL ESPN API) ----------------
+async function getNFL() {
+  try {
+    const res = await fetch(
+      "https://site.api.espn.com/apis/site/v2/sports/football/nfl/scoreboard"
+    );
+
+    const data = await res.json();
+
+    return data.events.slice(0, 3).map(g => {
+      const c = g.competitions[0];
+      const t = c.competitors;
+
+      return {
+        name: g.name,
+        clock: c.status.displayClock,
+        team1: t[0].team.abbreviation,
+        team2: t[1].team.abbreviation,
+        score1: t[0].score,
+        score2: t[1].score
+      };
+    });
+  } catch (err) {
+    console.log("NFL error:", err);
+    return [];
+  }
+}
+
+// ---------------- BUTTONS (NO TIMEOUT BUG) ----------------
 client.on("interactionCreate", async (i) => {
   try {
     if (!i.isButton()) return;
 
-    // ALWAYS defer first to prevent "did not respond"
     await i.deferReply({ ephemeral: true });
 
     if (i.customId === "gaming") {
-      return i.editReply("🎮 Gaming tracking is active (sessions logging in background)");
+      return i.editReply("🎮 Tracking games in background...");
     }
 
     if (i.customId === "youtube") {
-      return i.editReply("📺 YouTube system ready (RSS tracking enabled in backend)");
+      return i.editReply("📺 YouTube RSS tracking is active (no API key needed)");
     }
 
     if (i.customId === "nfl") {
-      return i.editReply("🏈 NFL system online (ESPN live data ready to integrate)");
+      const games = await getNFL();
+
+      if (!games.length) {
+        return i.editReply("🏈 No live NFL data right now");
+      }
+
+      const text = games
+        .map(g =>
+          `🏈 ${g.team1} ${g.score1} - ${g.score2} ${g.team2} (${g.clock})`
+        )
+        .join("\n");
+
+      return i.editReply(text);
     }
 
   } catch (err) {
     console.log("Interaction error:", err);
 
-    if (i.deferred || i.replied) {
-      return i.editReply("⚠️ Something went wrong.");
+    if (i.deferred) {
+      return i.editReply("⚠️ Error handling request");
     }
-
-    return i.reply({
-      content: "⚠️ Error handling request",
-      ephemeral: true
-    });
   }
 });
 
-// ---------------- READY EVENT (FIXED) ----------------
+// ---------------- READY ----------------
 client.once("ready", () => {
-  console.log(`Logged in as ${client.user.tag}`);
+  console.log(`✅ Logged in as ${client.user.tag}`);
 });
 
 // ---------------- LOGIN ----------------
