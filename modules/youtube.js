@@ -40,39 +40,37 @@ function getFeed(id, timeout = 10000) {
   });
 }
 
-// Decide how to respond to an interaction safely (update / reply / followUp)
-async function respondInteraction(i, payload, ephemeral = false) {
-  // payload: { content, components }
-  try {
-    // If it's a component interaction and we can update the original message, prefer update
-    if (i.isMessageComponent && i.isMessageComponent() && i.update) {
-      // Only call update if the interaction hasn't been replied to / deferred
-      if (!i.replied && !i.deferred) {
-        await i.update(payload).catch(async (err) => {
-          console.error('i.update failed', err);
-          // fallback to reply or followUp
-          if (!i.replied && !i.deferred) await i.reply({ ...payload, ephemeral }).catch(() => {});
-          else await i.followUp({ ...payload, ephemeral }).catch(() => {});
-        });
-        return;
-      }
-      // already replied/deferred -> use followUp
-      await i.followUp({ ...payload, ephemeral }).catch(() => {});
-      return;
-    }
+// interaction helpers
+const EPHEMERAL_FLAG = 64;
 
-    // Not a message component or can't update: reply if possible, otherwise followUp
+async function replyEphemeral(i, payload) {
+  try {
     if (!i.replied && !i.deferred) {
-      await i.reply({ ...payload, ephemeral }).catch(async (err) => {
-        console.error('i.reply failed', err);
-        // try followUp as last resort
-        try { await i.followUp({ ...payload, ephemeral }); } catch {};
-      });
+      await i.reply({ ...payload, flags: EPHEMERAL_FLAG });
     } else {
-      await i.followUp({ ...payload, ephemeral }).catch(() => {});
+      await i.followUp({ ...payload, flags: EPHEMERAL_FLAG });
     }
   } catch (e) {
-    console.error('respondInteraction error', e);
+    console.error('replyEphemeral failed', e);
+    try {
+      if (i.replied || i.deferred) await i.editReply({ content: payload.content || '...' });
+    } catch (err) { /* ignore */ }
+  }
+}
+
+// safe showModal helper: only call showModal if interaction hasn't been replied/deferred
+async function tryShowModal(i, modal) {
+  if (i.replied || i.deferred) {
+    await replyEphemeral(i, { content: 'Unable to open modal: interaction already replied. Please try again.' });
+    return false;
+  }
+  try {
+    await i.showModal(modal);
+    return true;
+  } catch (e) {
+    console.error('show modal error', e);
+    await replyEphemeral(i, { content: 'Failed to open modal (interaction state). Please try again.' });
+    return false;
   }
 }
 
@@ -93,10 +91,17 @@ async function handle(i, db, client) {
         )
       ];
 
-      await respondInteraction(i, { content: `📺 YOUTUBE DASHBOARD\n\n${list}`, components }, true);
+      // Prefer update on component interactions when possible
+      try {
+        if (i.update && !i.replied && !i.deferred) await i.update({ content: `📺 YOUTUBE DASHBOARD\n\n${list}`, components });
+        else await replyEphemeral(i, { content: `📺 YOUTUBE DASHBOARD\n\n${list}`, components });
+      } catch (e) {
+        console.error('dashboard respond error', e);
+        await replyEphemeral(i, { content: `📺 YOUTUBE DASHBOARD\n\n${list}`, components });
+      }
     } catch (e) {
       console.error('youtube dashboard error', e);
-      await respondInteraction(i, { content: 'Error loading YouTube dashboard' }, true);
+      await replyEphemeral(i, { content: 'Error loading YouTube dashboard' });
     }
     return true;
   }
@@ -111,16 +116,11 @@ async function handle(i, db, client) {
           )
         );
 
-      // show modal only if possible
-      if (i.replied || i.deferred) {
-        await respondInteraction(i, { content: 'Unable to open modal: interaction already replied. Try again.' }, true);
-        return true;
-      }
-
-      await i.showModal(modal);
+      // must not have replied/deferred prior to showModal
+      await tryShowModal(i, modal);
     } catch (e) {
       console.error('show modal error', e);
-      try { await respondInteraction(i, { content: 'Failed to open modal', components: [] }, true); } catch (err) { console.error(err); }
+      await replyEphemeral(i, { content: 'Failed to open modal' });
     }
 
     return true;
@@ -136,15 +136,10 @@ async function handle(i, db, client) {
           )
         );
 
-      if (i.replied || i.deferred) {
-        await respondInteraction(i, { content: 'Unable to open modal: interaction already replied. Try again.' }, true);
-        return true;
-      }
-
-      await i.showModal(modal);
+      await tryShowModal(i, modal);
     } catch (e) {
       console.error('show modal error', e);
-      try { await respondInteraction(i, { content: 'Failed to open modal', components: [] }, true); } catch (err) { console.error(err); }
+      await replyEphemeral(i, { content: 'Failed to open modal' });
     }
 
     return true;
@@ -154,7 +149,7 @@ async function handle(i, db, client) {
   if (i.customId === 'yt_manage') {
     try {
       const alerts = await dbAll(db, "SELECT a.id, a.target_id, a.condition, y.channel_name FROM alerts a LEFT JOIN youtube y ON y.channel_id = a.target_id WHERE a.user_id = ? AND a.type = ?", [i.user.id, 'youtube']);
-      if (!alerts.length) return await respondInteraction(i, { content: 'You have no YouTube alerts.', components: [] }, true);
+      if (!alerts.length) return await replyEphemeral(i, { content: 'You have no YouTube alerts.' });
 
       const lines = alerts.map(a => `ID:${a.id} — ${a.channel_name || a.target_id} — ${a.condition}`);
       // Create buttons for up to 5 alerts
@@ -166,10 +161,10 @@ async function handle(i, db, client) {
         ));
       }
 
-      await respondInteraction(i, { content: `Your alerts:\n${lines.join('\n')}`, components }, true);
+      await replyEphemeral(i, { content: `Your alerts:\n${lines.join('\n')}`, components });
     } catch (e) {
       console.error('manage alerts error', e);
-      await respondInteraction(i, { content: 'Failed to load your alerts' }, true);
+      await replyEphemeral(i, { content: 'Failed to load your alerts' });
     }
     return true;
   }
@@ -179,10 +174,10 @@ async function handle(i, db, client) {
     const id = i.customId.replace('yt_alert_del_', '');
     try {
       await dbRun(db, 'DELETE FROM alerts WHERE id = ?', [id]);
-      await respondInteraction(i, { content: `Deleted alert ${id}` }, true);
+      await replyEphemeral(i, { content: `Deleted alert ${id}` });
     } catch (e) {
       console.error('delete alert failed', e);
-      await respondInteraction(i, { content: 'Failed to delete alert' }, true);
+      await replyEphemeral(i, { content: 'Failed to delete alert' });
     }
     return true;
   }
@@ -191,20 +186,20 @@ async function handle(i, db, client) {
     const id = i.customId.replace('yt_alert_test_', '');
     try {
       const rows = await dbAll(db, 'SELECT * FROM alerts WHERE id = ?', [id]);
-      if (!rows.length) return await respondInteraction(i, { content: 'Alert not found' }, true);
+      if (!rows.length) return await replyEphemeral(i, { content: 'Alert not found' });
       const a = rows[0];
       try {
         const user = await client.users.fetch(a.user_id).catch(() => null);
-        if (user) { await user.send(`🔔 Test alert for ${a.type} ${a.target_id}`); await respondInteraction(i, { content: 'Test sent via DM' }, true); }
-        else if (a.notify_channel) { const ch = await client.channels.fetch(a.notify_channel).catch(()=>null); if (ch && ch.send) { await ch.send(`🔔 Test alert for ${a.type} ${a.target_id}`); await respondInteraction(i, { content: 'Test sent to fallback channel' }, true); } else await respondInteraction(i, { content: 'No delivery path available' }, true); }
-      } catch (e) { console.error('sending test failed', e); await respondInteraction(i, { content: 'Failed to send test' }, true); }
-    } catch (e) { console.error('alert test error', e); await respondInteraction(i, { content: 'Failed to load alert' }, true); }
+        if (user) { await user.send(`🔔 Test alert for ${a.type} ${a.target_id}`); await replyEphemeral(i, { content: 'Test sent via DM' }); }
+        else if (a.notify_channel) { const ch = await client.channels.fetch(a.notify_channel).catch(()=>null); if (ch && ch.send) { await ch.send(`🔔 Test alert for ${a.type} ${a.target_id}`); await replyEphemeral(i, { content: 'Test sent to fallback channel' }); } else await replyEphemeral(i, { content: 'No delivery path available' }); }
+      } catch (e) { console.error('sending test failed', e); await replyEphemeral(i, { content: 'Failed to send test' }); }
+    } catch (e) { console.error('alert test error', e); await replyEphemeral(i, { content: 'Failed to load alert' }); }
     return true;
   }
 
   // Remove all tracked channels
   if (i.customId === "yt_remove") {
-    try { await dbRun(db, "DELETE FROM youtube"); await respondInteraction(i, { content: "🗑 All channels removed" }, true); } catch (e) { console.error('Failed to remove youtube channels', e); await respondInteraction(i, { content: "Failed to remove channels" }, true); }
+    try { await dbRun(db, "DELETE FROM youtube"); await replyEphemeral(i, { content: "🗑 All channels removed" }); } catch (e) { console.error('Failed to remove youtube channels', e); await replyEphemeral(i, { content: "Failed to remove channels" }); }
     return true;
   }
 
@@ -216,7 +211,7 @@ async function handleModal(i, db, client) {
   if (i.customId === 'modal_yt_add') {
     const id = i.fields.getTextInputValue('channel_id').trim();
     let feed;
-    try { feed = await getFeed(id); } catch (e) { console.error('Failed to fetch feed for modal add', e); return await i.reply({ content: 'Failed to fetch feed — ensure ID is correct', ephemeral: true }); }
+    try { feed = await getFeed(id); } catch (e) { console.error('Failed to fetch feed for modal add', e); return await replyEphemeral(i, { content: 'Failed to fetch feed — ensure ID is correct' }); }
     const name = feed.match(/<name>(.*?)<\/name>/)?.[1] || 'Unknown';
     const video = feed.match(/<yt:videoId>(.*?)<\/yt:videoId>/)?.[1] || '';
 
@@ -230,10 +225,10 @@ async function handleModal(i, db, client) {
       } else {
         await dbRun(db, 'INSERT INTO youtube (channel_id, channel_name, owner_ids, notify_channel, last_video) VALUES (?,?,?,?,?)', [id, name, i.user.id, i.channel?.id || null, video]);
       }
-      await i.reply({ content: `✅ Added ${name}`, ephemeral: true });
+      await replyEphemeral(i, { content: `✅ Added ${name}` });
     } catch (e) {
       console.error('DB error modal add', e);
-      await i.reply({ content: 'DB error saving channel', ephemeral: true });
+      await replyEphemeral(i, { content: 'DB error saving channel' });
     }
     return;
   }
@@ -244,26 +239,26 @@ async function handleModal(i, db, client) {
 
     if (val.toLowerCase() === 'list') {
       const rows = await dbAll(db, 'SELECT * FROM youtube');
-      if (!rows.length) return await i.reply({ content: 'No channels tracked. Add some first.', ephemeral: true });
+      if (!rows.length) return await replyEphemeral(i, { content: 'No channels tracked. Add some first.' });
       const pickList = rows.map(r => `${r.channel_id} — ${r.channel_name}`).join('\n');
-      return await i.reply({ content: `Tracked channels:\n${pickList}\nTo subscribe, use the Subscribe button again and paste a channel ID from the list.`, ephemeral: true });
+      return await replyEphemeral(i, { content: `Tracked channels:\n${pickList}\nTo subscribe, use the Subscribe button again and paste a channel ID from the list.` });
     }
 
     const rows = await dbAll(db, 'SELECT * FROM youtube WHERE channel_id = ?', [targetId]);
-    if (!rows.length) return await i.reply({ content: 'Channel not tracked. Add it first using Add.', ephemeral: true });
+    if (!rows.length) return await replyEphemeral(i, { content: 'Channel not tracked. Add it first using Add.' });
 
     try {
       await dbRun(db, 'INSERT INTO alerts (user_id, type, target_id, condition, notify_channel) VALUES (?,?,?,?,?)', [i.user.id, 'youtube', targetId, 'new_video', i.channel?.id || null]);
-      await i.reply({ content: `🔔 Subscribed to ${rows[0].channel_name} new-video alerts`, ephemeral: true });
+      await replyEphemeral(i, { content: `🔔 Subscribed to ${rows[0].channel_name} new-video alerts` });
     } catch (e) {
       console.error('Failed to create alert modal', e);
-      await i.reply({ content: 'Failed to create subscription', ephemeral: true });
+      await replyEphemeral(i, { content: 'Failed to create subscription' });
     }
     return;
   }
 
   // unknown modal
-  await i.reply({ content: 'Unknown modal submission', ephemeral: true });
+  await replyEphemeral(i, { content: 'Unknown modal submission' });
 }
 
 // ---------------- REFRESH LOGIC (background poller) ----------------
