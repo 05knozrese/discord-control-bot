@@ -7,8 +7,24 @@ const {
   ButtonStyle
 } = require("discord.js");
 
-const TOKEN = process.env.TOKEN;
+const sqlite3 = require("sqlite3").verbose();
+const db = new sqlite3.Database("./bot.db");
 
+// ---------------- MODULES ----------------
+const gaming = require("./modules/gaming");
+
+// ---------------- DB SETUP ----------------
+db.run(`
+CREATE TABLE IF NOT EXISTS gaming (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  userId TEXT,
+  game TEXT,
+  startTime INTEGER,
+  duration INTEGER DEFAULT 0
+)
+`);
+
+// ---------------- CLIENT ----------------
 const client = new Client({
   intents: [
     GatewayIntentBits.Guilds,
@@ -17,80 +33,20 @@ const client = new Client({
   ]
 });
 
-// ---------------- DASHBOARD PAGES ----------------
-function mainPanel() {
+// ---------------- PANEL UI ----------------
+function panel() {
   return new EmbedBuilder()
-    .setTitle("🎛 V9 CONTROL DASHBOARD")
+    .setTitle("🎛 CONTROL PANEL")
     .setDescription(
-`🏈 NFL Center
-📅 Eagles Schedule
-📺 YouTube Alerts
-🎮 Gaming Stats
-
-Click a button below to navigate.`
+`🏈 NFL Dashboard
+🎮 Gaming Center
+📺 YouTube Center
+🔔 Notifications`
     )
     .setColor("Blue");
 }
 
-function nflPage() {
-  return new EmbedBuilder()
-    .setTitle("🏈 NFL DASHBOARD")
-    .setDescription(
-`⭐ Favorite Team: Eagles
-
-📊 Features:
-- Live score tracking (coming)
-- Standings view (coming)
-- Game alerts (coming)
-
-👉 Use Schedule button for games`
-    )
-    .setColor("Green");
-}
-
-function youtubePage() {
-  return new EmbedBuilder()
-    .setTitle("📺 YOUTUBE CENTER")
-    .setDescription(
-`🔔 Channel Alerts System
-
-Commands:
-!yt add <channel>
-!yt list
-!yt remove <channel>
-
-⚠️ Notifications system ready for upgrade`
-    )
-    .setColor("Red");
-}
-
-function gamingPage() {
-  return new EmbedBuilder()
-    .setTitle("🎮 GAMING CENTER")
-    .setDescription(
-`📊 Game Tracking:
-- Session logging active
-- Playtime stats (WIP)
-- Weekly breakdown (WIP)`
-    )
-    .setColor("Purple");
-}
-
-function schedulePage() {
-  return new EmbedBuilder()
-    .setTitle("📅 PHILADELPHIA EAGLES")
-    .setDescription(
-`🦅 Schedule:
-
-https://www.espn.com/nfl/team/schedule/_/name/phi/philadelphia-eagles
-
-🏟 Lincoln Financial Field`
-    )
-    .setColor("Green");
-}
-
-// ---------------- BUTTONS ----------------
-function menuButtons() {
+function buttons() {
   return new ActionRowBuilder().addComponents(
     new ButtonBuilder()
       .setCustomId("home")
@@ -103,8 +59,8 @@ function menuButtons() {
       .setStyle(ButtonStyle.Primary),
 
     new ButtonBuilder()
-      .setCustomId("schedule")
-      .setLabel("📅 Eagles")
+      .setCustomId("gaming")
+      .setLabel("🎮 Gaming")
       .setStyle(ButtonStyle.Success),
 
     new ButtonBuilder()
@@ -113,72 +69,121 @@ function menuButtons() {
       .setStyle(ButtonStyle.Danger),
 
     new ButtonBuilder()
-      .setCustomId("gaming")
-      .setLabel("🎮 Gaming")
+      .setCustomId("notif")
+      .setLabel("🔔 Alerts")
       .setStyle(ButtonStyle.Primary)
   );
 }
 
-// ---------------- COMMAND ----------------
+// ---------------- MESSAGE COMMANDS ----------------
 client.on("messageCreate", async (m) => {
   if (m.content === "!panel") {
     return m.reply({
-      embeds: [mainPanel()],
-      components: [menuButtons()]
+      embeds: [panel()],
+      components: [buttons()]
     });
   }
 
-  if (m.content === "!eagles") {
-    return m.reply({
-      embeds: [schedulePage()]
+  // ---------------- GAMING COMMANDS ----------------
+
+  if (m.content.startsWith("!play start")) {
+    const game = m.content.split(" ").slice(2).join(" ");
+    if (!game) return m.reply("❌ Enter a game name");
+
+    gaming.startSession(m.author.id, game);
+    return m.reply(`🎮 Started tracking: **${game}**`);
+  }
+
+  if (m.content === "!play stop") {
+    gaming.stopSession(m.author.id, (msg) => {
+      m.reply(msg);
+    });
+  }
+
+  if (m.content === "!gaming stats") {
+    gaming.getStats(m.author.id, (data) => {
+      return m.reply(
+`🎮 GAMING STATS
+
+⏱ Total: ${data.total} min
+
+📊 Sessions:
+${data.sessions.join("\n") || "No data"}`
+      );
     });
   }
 });
 
-// ---------------- INTERACTIONS ----------------
+// ---------------- BUTTON HANDLER ----------------
 client.on("interactionCreate", async (i) => {
   try {
     if (!i.isButton()) return;
 
     await i.deferReply({ ephemeral: true });
 
-    switch (i.customId) {
-      case "home":
-        return i.editReply({
-          embeds: [mainPanel()],
-          components: [menuButtons()]
-        });
+    // HOME
+    if (i.customId === "home") {
+      return i.editReply({
+        embeds: [panel()],
+        components: [buttons()]
+      });
+    }
 
-      case "nfl":
-        return i.editReply({
-          embeds: [nflPage()],
-          components: [menuButtons()]
-        });
+    // NFL TAB (KEEP SIMPLE)
+    if (i.customId === "nfl") {
+      return i.editReply(
+`🏈 NFL DASHBOARD
 
-      case "schedule":
-        return i.editReply({
-          embeds: [schedulePage()],
-          components: [menuButtons()]
-        });
+⭐ Favorite: Eagles
 
-      case "youtube":
-        return i.editReply({
-          embeds: [youtubePage()],
-          components: [menuButtons()]
-        });
+📅 Schedule:
+https://www.espn.com/nfl/team/schedule/_/name/phi/philadelphia-eagles
 
-      case "gaming":
-        return i.editReply({
-          embeds: [gamingPage()],
-          components: [menuButtons()]
-        });
+📊 Last games + stats coming soon`
+      );
+    }
 
-      default:
-        return i.editReply("⚠️ Unknown panel option");
+    // GAMING TAB (NOW WORKS)
+    if (i.customId === "gaming") {
+      return i.editReply(
+`🎮 GAMING CENTER
+
+📊 Track your gameplay:
+!play start <game>
+!play stop
+!gaming stats`
+      );
+    }
+
+    // YOUTUBE TAB (SAFE PLACEHOLDER)
+    if (i.customId === "youtube") {
+      return i.editReply(
+`📺 YOUTUBE CENTER
+
+⚠️ System placeholder (next upgrade)
+
+Commands:
+!yt add <channel>
+!yt list
+!yt remove`
+      );
+    }
+
+    // NOTIFICATIONS TAB (SAFE PLACEHOLDER)
+    if (i.customId === "notif") {
+      return i.editReply(
+`🔔 NOTIFICATION CENTER
+
+⚠️ Coming soon:
+
+- YouTube uploads
+- NFL score alerts
+- Custom pings`
+      );
     }
 
   } catch (err) {
-    console.log("Interaction error:", err);
+    console.log(err);
 
     if (i.deferred || i.replied) {
       return i.editReply("⚠️ Error occurred");
@@ -193,7 +198,7 @@ client.on("interactionCreate", async (i) => {
 
 // ---------------- START ----------------
 client.once("ready", () => {
-  console.log(`✅ V9 DASHBOARD ONLINE: ${client.user.tag}`);
+  console.log(`✅ ONLINE: ${client.user.tag}`);
 });
 
-client.login(TOKEN);
+client.login(process.env.TOKEN);
