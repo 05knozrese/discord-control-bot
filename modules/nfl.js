@@ -1,49 +1,43 @@
-let client;
-let channel = null;
+const db = require("./db");
 
-async function fetchNFL() {
-  try {
-    const res = await fetch("https://site.api.espn.com/apis/site/v2/sports/football/nfl/scoreboard");
-    const data = await res.json();
+async function fetchGames(team) {
+  const res = await fetch("https://site.api.espn.com/apis/site/v2/sports/football/nfl/scoreboard");
+  const data = await res.json();
 
-    return data.events.slice(0, 5).map(g => {
-      const c = g.competitions[0];
-      const t = c.competitors;
-
-      return `🏈 ${t[0].team.abbreviation} ${t[0].score} - ${t[1].score} ${t[1].team.abbreviation}`;
-    }).join("\n");
-  } catch {
-    return "NFL error";
-  }
-}
-
-function init(c) {
-  client = c;
-
-  setInterval(async () => {
-    if (!channel) return;
-
-    try {
-      const ch = await client.channels.fetch(channel);
-      ch.send("📊 NFL LIVE\n" + await fetchNFL());
-    } catch {}
-  }, 30000);
+  return data.events
+    .filter(g =>
+      g.competitions[0].competitors.some(t => t.team.abbreviation === team)
+    )
+    .slice(0, 5)
+    .map(g => {
+      const c = g.competitions[0].competitors;
+      return `🏈 ${c[0].team.abbreviation} ${c[0].score} - ${c[1].score} ${c[1].team.abbreviation}`;
+    })
+    .join("\n");
 }
 
 function commands(client, m) {
-  if (m.content === "!nfl on") {
-    channel = m.channel.id;
-    m.reply("🏈 NFL ON");
+  const args = m.content.split(" ");
+
+  if (args[0] === "!team" && args[1] === "set") {
+    db.run("INSERT OR REPLACE INTO nfl VALUES (?,?)", [
+      m.author.id,
+      args[2]
+    ]);
+
+    return m.reply("🏈 Team saved");
   }
 
-  if (m.content === "!nfl off") {
-    channel = null;
-    m.reply("🏈 NFL OFF");
-  }
+  if (args[0] === "!team" && args[1] === "last") {
+    db.get("SELECT team FROM nfl WHERE user_id=?", [m.author.id], async (err, row) => {
+      if (!row) return m.reply("No team set");
 
-  if (m.content === "!nfl") {
-    fetchNFL().then(x => m.reply(x));
+      const games = await fetchGames(row.team);
+      m.reply(`🏈 Last 5 games:\n${games}`);
+    });
   }
 }
+
+function init() {}
 
 module.exports = { init, commands };
