@@ -84,6 +84,8 @@ async function handle(i, db, client) {
 
       const components = [
         new ActionRowBuilder().addComponents(
+          // Home/back button so users can return from dashboard
+          new ButtonBuilder().setCustomId("home").setLabel("🏠 Home").setStyle(ButtonStyle.Secondary),
           new ButtonBuilder().setCustomId("yt_add").setLabel("Add").setStyle(ButtonStyle.Success),
           new ButtonBuilder().setCustomId("yt_subscribe").setLabel("Subscribe").setStyle(ButtonStyle.Primary),
           new ButtonBuilder().setCustomId("yt_manage").setLabel("Manage Alerts").setStyle(ButtonStyle.Secondary),
