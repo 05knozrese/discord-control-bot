@@ -46,10 +46,26 @@ db.run(
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     channel_id TEXT UNIQUE,
     channel_name TEXT,
+    owner_ids TEXT,
     notify_channel TEXT,
     last_video TEXT
   )`,
   (e) => { if (e) console.error('Failed to create youtube table', e); }
+);
+
+// ---------------- ALERTS TABLE ----------------
+db.run(
+  `CREATE TABLE IF NOT EXISTS alerts (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id TEXT NOT NULL,
+    type TEXT NOT NULL,
+    target_id TEXT NOT NULL,
+    condition TEXT NOT NULL,
+    notify_channel TEXT,
+    last_notified TEXT,
+    created_at INTEGER DEFAULT (strftime('%s','now'))
+  )`,
+  (e) => { if (e) console.error('Failed to create alerts table', e); }
 );
 
 // ---------------- SESSIONS ----------------
@@ -113,7 +129,9 @@ function panel() {
     .setDescription(
 `🎮 Gaming System
 📺 YouTube Dashboard
-🔔 Notifications`
+🏈 NFL
+🔔 Alerts
+📊 Analytics`
     )
     .setColor("Blue");
 }
@@ -123,6 +141,7 @@ function buttons() {
     new ButtonBuilder().setCustomId("home").setLabel("🏠 Home").setStyle(ButtonStyle.Secondary),
     new ButtonBuilder().setCustomId("gaming").setLabel("🎮 Gaming").setStyle(ButtonStyle.Success),
     new ButtonBuilder().setCustomId("youtube").setLabel("📺 YouTube").setStyle(ButtonStyle.Danger),
+    new ButtonBuilder().setCustomId("nfl").setLabel("🏈 NFL").setStyle(ButtonStyle.Primary),
     new ButtonBuilder().setCustomId("notif").setLabel("🔔 Alerts").setStyle(ButtonStyle.Primary)
   );
 }
@@ -174,7 +193,7 @@ client.on("interactionCreate", async (i) => {
     // DeferReply is fine if we plan to use editReply/followUp.
     await i.deferReply({ ephemeral: true });
 
-    const handled = await youtube.handle(i, db);
+    const handled = await youtube.handle(i, db, client);
     if (handled) return;
 
     if (i.customId === "home") {
@@ -196,10 +215,28 @@ client.on("interactionCreate", async (i) => {
 });
 
 // ---------------- START ----------------
-client.once("ready", () => {
-  console.log(`ONLINE ${client.user.tag}`);
-});
+let isPolling = false;
+async function start() {
+  // start poller every 1 minute
+  setInterval(async () => {
+    if (isPolling) return;
+    isPolling = true;
+    try {
+      await youtube.refreshAll(db, client);
+    } catch (e) {
+      console.error('Background refresh error', e);
+    } finally {
+      isPolling = false;
+    }
+  }, 60 * 1000);
 
-client.login(process.env.TOKEN).catch(e => {
-  console.error('Failed to login - check TOKEN env var', e);
-});
+  client.once("ready", () => {
+    console.log(`ONLINE ${client.user.tag}`);
+  });
+
+  client.login(process.env.TOKEN).catch(e => {
+    console.error('Failed to login - check TOKEN env var', e);
+  });
+}
+
+start();
