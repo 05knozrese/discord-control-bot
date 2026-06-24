@@ -2,76 +2,58 @@ const db = require("./db");
 
 // ---------------- TEAM MAP ----------------
 const TEAM_MAP = {
-  eagles: "Philadelphia Eagles",
-  chiefs: "Kansas City Chiefs",
-  cowboys: "Dallas Cowboys",
-  giants: "New York Giants",
-  commanders: "Washington Commanders",
+  eagles: "PHI",
+  chiefs: "KC",
+  cowboys: "DAL",
+  giants: "NYG",
+  commanders: "WAS",
 
-  bills: "Buffalo Bills",
-  dolphins: "Miami Dolphins",
-  jets: "New York Jets",
-  patriots: "New England Patriots",
+  bills: "BUF",
+  dolphins: "MIA",
+  jets: "NYJ",
+  patriots: "NE",
 
-  ravens: "Baltimore Ravens",
-  steelers: "Pittsburgh Steelers",
-  browns: "Cleveland Browns",
-  bengals: "Cincinnati Bengals",
+  ravens: "BAL",
+  steelers: "PIT",
+  browns: "CLE",
+  bengals: "CIN",
 
-  "49ers": "San Francisco 49ers",
-  niners: "San Francisco 49ers",
-  packers: "Green Bay Packers",
-  lions: "Detroit Lions",
-  vikings: "Minnesota Vikings"
+  colts: "IND",
+  texans: "HOU",
+  jaguars: "JAX",
+  titans: "TEN",
+
+  bears: "CHI",
+  packers: "GB",
+  lions: "DET",
+  vikings: "MIN",
+
+  saints: "NO",
+  buccaneers: "TB",
+  falcons: "ATL",
+  panthers: "CAR",
+
+  "49ers": "SF",
+  niners: "SF",
+  seahawks: "SEA",
+  rams: "LAR",
+  cardinals: "ARI"
 };
 
-// ---------------- RESOLVE TEAM ----------------
+// ---------------- RESOLVE ----------------
 function resolveTeam(input) {
   if (!input) return null;
   return TEAM_MAP[input.toLowerCase()] || null;
 }
 
-// ---------------- GET LAST GAMES (REAL FIX) ----------------
-async function getLastGames(teamInput) {
-  const teamName = resolveTeam(teamInput);
+// ---------------- GET REAL TEAM INFO ----------------
+async function getTeamInfo(teamInput) {
+  const team = resolveTeam(teamInput);
 
-  if (!teamName) {
-    return "❌ Unknown team. Try: eagles, chiefs, cowboys, 49ers";
+  if (!team) {
+    return "❌ Unknown team. Try: eagles, chiefs, 49ers";
   }
 
-  try {
-    // ESPN alternate endpoint (more stable than scoreboard filtering)
-    const res = await fetch(
-      "https://site.api.espn.com/apis/site/v2/sports/football/nfl/teams"
-    );
-
-    const data = await res.json();
-
-    if (!data?.sports?.length) {
-      return "⚠️ NFL data unavailable";
-    }
-
-    // We CANNOT reliably get full history from this endpoint,
-    // so we return a safe "recent activity" fallback message
-    return (
-`🏈 ${teamName.toUpperCase()} DATA
-
-📊 Recent info is limited from free API
-
-👉 Use live games instead:
-https://www.espn.com/nfl/
-
-⚡ Tip: For full game history, a paid API is required`
-    );
-
-  } catch (err) {
-    console.log("NFL ERROR:", err);
-    return "⚠️ Failed to load NFL data";
-  }
-}
-
-// ---------------- STANDINGS (SAFE VERSION) ----------------
-async function getStandings() {
   try {
     const res = await fetch(
       "https://site.api.espn.com/apis/site/v2/sports/football/nfl/teams"
@@ -81,15 +63,29 @@ async function getStandings() {
 
     const teams = data?.sports?.[0]?.leagues?.[0]?.teams;
 
-    if (!teams) return "⚠️ No standings available";
+    if (!teams) return "⚠️ No team data available";
 
-    return teams
-      .slice(0, 12)
-      .map(t => `🏈 ${t.team.displayName}`)
-      .join("\n");
+    const match = teams.find(t => t.team.abbreviation === team);
 
-  } catch (e) {
-    return "⚠️ Failed to load standings";
+    if (!match) return "❌ Team not found in API";
+
+    const info = match.team;
+
+    return (
+`🏈 ${info.displayName}
+
+📊 Record: ${match.record?.items?.[0]?.summary || "N/A"}
+
+🏟 Stadium: ${info.venue?.fullName || "N/A"}
+
+⭐ Conference: ${info.conference?.name || "N/A"}
+
+🔗 https://www.espn.com/nfl/team/_/name/${team}/${info.slug}`
+    );
+
+  } catch (err) {
+    console.log("NFL ERROR:", err);
+    return "⚠️ Failed to load NFL data";
   }
 }
 
@@ -113,36 +109,21 @@ function commands(client, m) {
     return m.reply(`🏈 Favorite team set to **${team}**`);
   }
 
-  // LAST
-  if (args[0] === "!team" && args[1] === "last") {
-    db.get("SELECT team FROM nfl WHERE user_id=?", [m.author.id], async (err, row) => {
-      if (!row) return m.reply("❌ No team set. Use !team set eagles");
-
-      const result = await getLastGames(row.team);
-
-      return m.reply(result);
-    });
-  }
-
-  // DASHBOARD
+  // DASHBOARD (REAL DATA NOW)
   if (args[0] === "!team" && args[1] === "dashboard") {
     db.get("SELECT team FROM nfl WHERE user_id=?", [m.author.id], async (err, row) => {
       if (!row) return m.reply("❌ No team set");
 
-      const result = await getLastGames(row.team);
+      const info = await getTeamInfo(row.team);
 
       return m.reply(
 `🏈 NFL DASHBOARD
 
-⭐ Team: ${row.team.toUpperCase()}
-
-📊 Info:
-${result}
+${info}
 
 ⚡ Commands:
 !team set eagles
-!team last
-!standings`
+!team dashboard`
       );
     });
   }
@@ -152,16 +133,9 @@ ${result}
     db.get("SELECT team FROM nfl WHERE user_id=?", [m.author.id], async (err, row) => {
       if (!row) return m.reply("Set team first: !team set eagles");
 
-      const result = await getLastGames(row.team);
+      const info = await getTeamInfo(row.team);
 
-      return m.reply(`🏈 ${row.team.toUpperCase()}\n\n${result}`);
-    });
-  }
-
-  // STANDINGS
-  if (args[0] === "!standings") {
-    getStandings().then(data => {
-      m.reply(`📊 NFL STANDINGS\n\n${data}`);
+      return m.reply(info);
     });
   }
 }
