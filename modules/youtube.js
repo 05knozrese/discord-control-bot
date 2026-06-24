@@ -1,24 +1,42 @@
 const db = require("./db");
 
-let lastVideos = {};
-
 function init(client) {
   setInterval(async () => {
     db.all("SELECT * FROM youtube", async (err, rows) => {
+      if (!rows) return;
+
       for (const r of rows) {
-        const res = await fetch(`https://www.youtube.com/feeds/videos.xml?channel_id=${r.channel_id}`);
-        const text = await res.text();
+        try {
+          const res = await fetch(
+            `https://www.youtube.com/feeds/videos.xml?channel_id=${r.channel_id}`
+          );
 
-        const vid = text.match(/<yt:videoId>(.*?)<\/yt:videoId>/)?.[1];
-        if (!vid || lastVideos[r.channel_id] === vid) continue;
+          const text = await res.text();
 
-        lastVideos[r.channel_id] = vid;
+          const videoId =
+            text.match(/<yt:videoId>(.*?)<\/yt:videoId>/)?.[1];
 
-        const ch = await client.channels.fetch(r.notify_channel);
+          if (!videoId) continue;
 
-        ch.send(
-          `📺 **${r.channel_name}** uploaded:\nhttps://youtube.com/watch?v=${vid}`
-        );
+          // STOP DUPLICATES
+          if (r.last_video === videoId) continue;
+
+          db.run(
+            "UPDATE youtube SET last_video=? WHERE id=?",
+            [videoId, r.id]
+          );
+
+          const channel = await client.channels.fetch(r.notify_channel);
+
+          if (!channel) return;
+
+          channel.send(
+            `📺 **${r.channel_name}** just uploaded:\nhttps://youtube.com/watch?v=${videoId}`
+          );
+
+        } catch (e) {
+          console.log("YouTube error:", e.message);
+        }
       }
     });
   }, 60000);
@@ -27,37 +45,57 @@ function init(client) {
 function commands(client, m) {
   const args = m.content.split(" ");
 
+  // ADD CHANNEL
   if (args[0] === "!yt" && args[1] === "add") {
     const id = args[2];
+    if (!id) return m.reply("Usage: !yt add CHANNEL_ID");
 
-    fetch(`https://www.youtube.com/feeds/videos.xml?channel_id=${id}`)
+    fetch(
+      `https://www.youtube.com/feeds/videos.xml?channel_id=${id}`
+    )
       .then(r => r.text())
       .then(text => {
-        const name = text.match(/<name>(.*?)<\/name>/)?.[1] || "Unknown";
+        const name =
+          text.match(/<name>(.*?)<\/name>/)?.[1] || "Unknown";
+
+        const latest =
+          text.match(/<yt:videoId>(.*?)<\/yt:videoId>/)?.[1] || "";
 
         db.run(
-          "INSERT INTO youtube(channel_id,channel_name,notify_channel) VALUES (?,?,?)",
-          [id, name, m.channel.id]
+          `INSERT OR IGNORE INTO youtube
+          (channel_id,channel_name,notify_channel,last_video)
+          VALUES (?,?,?,?)`,
+          [id, name, m.channel.id, latest]
         );
 
-        m.reply(`📺 Added ${name}`);
+        m.reply(`✅ Added **${name}**`);
       });
   }
 
+  // LIST CHANNELS
   if (args[0] === "!yt" && args[1] === "list") {
     db.all("SELECT * FROM youtube", (err, rows) => {
+      if (!rows?.length) return m.reply("No channels added");
+
       m.reply(
-        rows.map(r =>
-          `📺 ${r.channel_name}\nhttps://youtube.com/channel/${r.channel_id}`
-        ).join("\n\n") || "None"
+        rows
+          .map(
+            (r, i) =>
+              `${i + 1}. ${r.channel_name}
+https://youtube.com/channel/${r.channel_id}`
+          )
+          .join("\n\n")
       );
     });
   }
 
+  // REMOVE CHANNEL
   if (args[0] === "!yt" && args[1] === "remove") {
     const id = args[2];
+    if (!id) return m.reply("Usage: !yt remove CHANNEL_ID");
 
     db.run("DELETE FROM youtube WHERE channel_id=?", [id]);
+
     m.reply("🗑 Removed channel");
   }
 }
