@@ -1,69 +1,52 @@
 const db = require("../db");
 
-// ---------------- START SESSION ----------------
+// START
 function startSession(userId, game) {
-  const startTime = Date.now();
-
   db.run(
-    `INSERT INTO gaming (userId, game, startTime) VALUES (?,?,?)`,
-    [userId, game, startTime]
+    "INSERT INTO gaming (userId, game, startTime) VALUES (?,?,?)",
+    [userId, game, Date.now()]
   );
 }
 
-// ---------------- STOP SESSION ----------------
+// STOP
 function stopSession(userId, cb) {
-  const endTime = Date.now();
-
   db.get(
-    `SELECT * FROM gaming WHERE userId=? ORDER BY id DESC LIMIT 1`,
+    "SELECT * FROM gaming WHERE userId=? ORDER BY id DESC LIMIT 1",
     [userId],
     (err, row) => {
-      if (!row) return cb("❌ No active session");
+      if (!row) return cb("❌ No session");
 
-      const minutes = Math.floor((endTime - row.startTime) / 60000);
+      const mins = Math.floor((Date.now() - row.startTime) / 60000);
 
       db.run(
-        `UPDATE gaming SET duration=? WHERE id=?`,
-        [minutes, row.id]
+        "UPDATE gaming SET duration=? WHERE id=?",
+        [mins, row.id]
       );
 
-      cb(`⏹ Session saved: ${row.game} (${minutes} min)`);
+      cb(`⏹ Saved: ${row.game} (${mins} min)`);
     }
   );
 }
 
-// ---------------- GET STATS ----------------
+// STATS
 function getStats(userId, cb) {
   db.all(
-    `SELECT * FROM gaming WHERE userId=? ORDER BY id DESC LIMIT 10`,
+    "SELECT * FROM gaming WHERE userId=? ORDER BY id DESC LIMIT 10",
     [userId],
     (err, rows) => {
-      if (!rows || rows.length === 0) {
-        return cb({
-          total: 0,
-          sessions: []
-        });
-      }
-
       let total = 0;
 
-      const sessions = rows.map(r => {
-        const d = r.duration || 0;
-        total += d;
-
-        return `🎮 ${r.game} — ${d} min`;
+      const list = (rows || []).map(r => {
+        total += r.duration || 0;
+        return `🎮 ${r.game} — ${r.duration || 0} min`;
       });
 
       cb({
         total,
-        sessions
+        sessions: list
       });
     }
   );
 }
 
-module.exports = {
-  startSession,
-  stopSession,
-  getStats
-};
+module.exports = { startSession, stopSession, getStats };
