@@ -1,14 +1,11 @@
-const {
-  Client,
-  GatewayIntentBits,
-  EmbedBuilder,
-  ActionRowBuilder,
-  ButtonBuilder,
-  ButtonStyle
-} = require("discord.js");
+const { Client, GatewayIntentBits } = require("discord.js");
 
 const TOKEN = process.env.TOKEN;
-const CLIENT_ID = process.env.CLIENT_ID; // optional (NOT required)
+
+if (!TOKEN) {
+  console.error("❌ Missing TOKEN in Railway Variables");
+  process.exit(1);
+}
 
 const client = new Client({
   intents: [
@@ -18,13 +15,9 @@ const client = new Client({
   ]
 });
 
-// ---------------- READY ----------------
+// ---------------- SAFE START ----------------
 client.once("ready", () => {
-  console.log(`✅ Logged in as ${client.user.tag}`);
-
-  if (CLIENT_ID) {
-    console.log("ℹ️ CLIENT_ID detected (slash commands could be added later)");
-  }
+  console.log(`✅ V7 ONLINE: ${client.user.tag}`);
 });
 
 // ---------------- PANEL ----------------
@@ -32,44 +25,15 @@ client.on("messageCreate", async (m) => {
   if (m.author.bot) return;
 
   if (m.content === "!panel") {
-    const row = new ActionRowBuilder().addComponents(
-      new ButtonBuilder()
-        .setCustomId("gaming")
-        .setLabel("🎮 Gaming")
-        .setStyle(ButtonStyle.Primary),
-
-      new ButtonBuilder()
-        .setCustomId("nfl")
-        .setLabel("🏈 NFL")
-        .setStyle(ButtonStyle.Primary)
+    return m.reply(
+      "🎛 CONTROL HUB V7\n\n" +
+      "🎮 Gaming Tracking\n" +
+      "🏈 NFL Live (coming)\n" +
+      "📺 YouTube Tracking (coming)\n" +
+      "⏰ Reminders\n"
     );
-
-    return m.reply({
-      embeds: [
-        new EmbedBuilder()
-          .setTitle("🎛 Control Hub")
-          .setDescription("Gaming • NFL • YouTube • Stats")
-          .setColor("Blue")
-      ],
-      components: [row]
-    });
   }
 });
 
-// ---------------- BUTTONS ----------------
-client.on("interactionCreate", async (i) => {
-  if (!i.isButton()) return;
-
-  await i.deferReply({ ephemeral: true });
-
-  if (i.customId === "gaming") {
-    return i.editReply("🎮 Gaming tracking active");
-  }
-
-  if (i.customId === "nfl") {
-    return i.editReply("🏈 NFL system online (ESPN API ready)");
-  }
-});
-
-// ---------------- LOGIN ----------------
+// ---------------- SAFE LOGIN ----------------
 client.login(TOKEN);
