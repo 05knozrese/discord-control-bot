@@ -10,10 +10,7 @@ const {
 const sqlite3 = require("sqlite3").verbose();
 const db = new sqlite3.Database("./bot.db");
 
-// ---------------- MODULES ----------------
-const gaming = require("./modules/gaming");
-
-// ---------------- DB SETUP ----------------
+// ---------------- GAMING TABLE ----------------
 db.run(`
 CREATE TABLE IF NOT EXISTS gaming (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -90,27 +87,55 @@ client.on("messageCreate", async (m) => {
     const game = m.content.split(" ").slice(2).join(" ");
     if (!game) return m.reply("❌ Enter a game name");
 
-    gaming.startSession(m.author.id, game);
+    db.run(
+      "INSERT INTO gaming (userId, game, startTime) VALUES (?,?,?)",
+      [m.author.id, game, Date.now()]
+    );
+
     return m.reply(`🎮 Started tracking: **${game}**`);
   }
 
   if (m.content === "!play stop") {
-    gaming.stopSession(m.author.id, (msg) => {
-      m.reply(msg);
-    });
+    db.get(
+      "SELECT * FROM gaming WHERE userId=? ORDER BY id DESC LIMIT 1",
+      [m.author.id],
+      (err, row) => {
+        if (!row) return m.reply("❌ No active session");
+
+        const mins = Math.floor((Date.now() - row.startTime) / 60000);
+
+        db.run(
+          "UPDATE gaming SET duration=? WHERE id=?",
+          [mins, row.id]
+        );
+
+        return m.reply(`⏹ Session saved: **${row.game}** (${mins} min)`);
+      }
+    );
   }
 
   if (m.content === "!gaming stats") {
-    gaming.getStats(m.author.id, (data) => {
-      return m.reply(
+    db.all(
+      "SELECT * FROM gaming WHERE userId=? ORDER BY id DESC LIMIT 10",
+      [m.author.id],
+      (err, rows) => {
+        let total = 0;
+
+        const list = (rows || []).map(r => {
+          total += r.duration || 0;
+          return `🎮 ${r.game} — ${r.duration || 0} min`;
+        });
+
+        return m.reply(
 `🎮 GAMING STATS
 
-⏱ Total: ${data.total} min
+⏱ Total Time: ${total} min
 
-📊 Sessions:
-${data.sessions.join("\n") || "No data"}`
-      );
-    });
+📊 Recent Sessions:
+${list.join("\n") || "No sessions yet"}`
+        );
+      }
+    );
   }
 });
 
@@ -129,7 +154,7 @@ client.on("interactionCreate", async (i) => {
       });
     }
 
-    // NFL TAB (KEEP SIMPLE)
+    // NFL (KEEP SIMPLE LIKE YOU WANTED)
     if (i.customId === "nfl") {
       return i.editReply(
 `🏈 NFL DASHBOARD
@@ -143,12 +168,12 @@ https://www.espn.com/nfl/team/schedule/_/name/phi/philadelphia-eagles
       );
     }
 
-    // GAMING TAB (NOW WORKS)
+    // GAMING TAB
     if (i.customId === "gaming") {
       return i.editReply(
 `🎮 GAMING CENTER
 
-📊 Track your gameplay:
+Commands:
 !play start <game>
 !play stop
 !gaming stats`
@@ -160,7 +185,7 @@ https://www.espn.com/nfl/team/schedule/_/name/phi/philadelphia-eagles
       return i.editReply(
 `📺 YOUTUBE CENTER
 
-⚠️ System placeholder (next upgrade)
+⚠️ Feature coming next update
 
 Commands:
 !yt add <channel>
@@ -169,7 +194,7 @@ Commands:
       );
     }
 
-    // NOTIFICATIONS TAB (SAFE PLACEHOLDER)
+    // NOTIFICATIONS TAB
     if (i.customId === "notif") {
       return i.editReply(
 `🔔 NOTIFICATION CENTER
@@ -177,8 +202,8 @@ Commands:
 ⚠️ Coming soon:
 
 - YouTube uploads
-- NFL score alerts
-- Custom pings`
+- NFL score pings
+- Custom alerts`
       );
     }
 
