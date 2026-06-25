@@ -141,7 +141,6 @@ client.on("presenceUpdate", (oldPresence, newPresence) => {
 
 // ---------------- PANEL ----------------
 function panel() {
-  // If NFL module failed to load, present note in the panel description so users know it's unavailable.
   const nflAvailable = !!nfl;
   return new EmbedBuilder()
     .setTitle("🎛 CONTROL PANEL V14")
@@ -155,7 +154,6 @@ function panel() {
 }
 
 function buttons() {
-  // Always include the NFL button visually; functionality will show a friendly message if module missing.
   return new ActionRowBuilder().addComponents(
     new ButtonBuilder().setCustomId("home").setLabel("🏠 Home").setStyle(ButtonStyle.Secondary),
     new ButtonBuilder().setCustomId("gaming").setLabel("🎮 Gaming").setStyle(ButtonStyle.Success),
@@ -169,7 +167,6 @@ function buttons() {
 const EPHEMERAL_FLAG = 64;
 
 async function replyEphemeral(i, payload) {
-  // payload: { content, components, embeds, etc. }
   try {
     if (!i.replied && !i.deferred) {
       await i.reply({ ...payload, flags: EPHEMERAL_FLAG });
@@ -186,10 +183,28 @@ async function replyEphemeral(i, payload) {
 
 // ---------------- MESSAGES ----------------
 client.on("messageCreate", async (m) => {
-  // ignore other bots
   if (m.author?.bot) return;
 
   try {
+    // quick chat: set favorite
+    if (m.content && m.content.toLowerCase().startsWith("!team set ")) {
+      const team = m.content.split(" ").slice(2).join(" ").trim();
+      if (!team) return m.reply("Usage: !team set <team>");
+
+      db.run(
+        "INSERT OR REPLACE INTO nfl_favorites (user_id, team_id, team_name, created_at) VALUES (?,?,?,strftime('%s','now'))",
+        [m.author.id, team, team],
+        (err) => {
+          if (err) {
+            console.error('Failed to save favorite team via chat command', err);
+            return m.reply('Failed to set favorite team');
+          }
+          return m.reply(`🏈 Favorite team set to **${team}**`);
+        }
+      );
+      return;
+    }
+
     if (m.content === "!panel") {
       try {
         await m.reply({ embeds: [panel()], components: [buttons()] });
@@ -235,7 +250,7 @@ ${list.join("\n") || "No data"}`
 // ---------------- INTERACTIONS ----------------
 client.on("interactionCreate", async (i) => {
   try {
-    // 1) Modal submits first
+    // modal submits first
     if (i.isModalSubmit && i.isModalSubmit()) {
       if (i.customId && i.customId.startsWith('modal_yt')) {
         await youtube.handleModal(i, db, client);
@@ -245,27 +260,29 @@ client.on("interactionCreate", async (i) => {
         await nfl.handleModal(i, db, client);
         return;
       }
-      // if nfl not present and user submitted a modal_nfl something, fall through to error replyEphemeral below
     }
 
-    // 2) Only handle button interactions here
     if (!i.isButton || !i.isButton()) return;
 
-    // Let module handle interactions that may show modals or reply synchronously
+    // allow modules to handle first (they may show modals or reply)
     const yHandled = await youtube.handle(i, db, client);
     if (yHandled) return;
-
     if (nfl) {
       const nHandled = await nfl.handle(i, db, client);
       if (nHandled) return;
     } else if (i.customId === 'nfl') {
-      // NFL button pressed but module missing — inform user briefly
       await replyEphemeral(i, { content: "NFL features are currently unavailable. The module failed to load on startup." });
       return;
     }
 
-    // Safe to defer/reply for interactions that require async processing
-    await i.deferReply({ flags: EPHEMERAL_FLAG });
+    // Only defer if interaction still open
+    if (!i.replied && !i.deferred) {
+      try {
+        await i.deferReply({ flags: EPHEMERAL_FLAG });
+      } catch (err) {
+        console.warn('deferReply failed (ignored):', err && err.message ? err.message : err);
+      }
+    }
 
     if (i.customId === "home") {
       return i.editReply({ embeds: [panel()], components: [buttons()] });
