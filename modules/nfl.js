@@ -112,14 +112,12 @@ async function findTeamViaEspn(input) {
     const teams = data?.sports?.[0]?.leagues?.[0]?.teams || [];
     const key = input.trim().toLowerCase();
 
-    // first try quick map
     const quick = resolveTeamQuick(input);
     if (quick) {
       const match = teams.find(t => (t.team?.abbreviation || "").toLowerCase() === quick.toLowerCase());
       if (match) return { abbrev: match.team.abbreviation, slug: match.team.slug, displayName: match.team.displayName };
     }
 
-    // try matching by abbreviation or displayName or shortName
     let match = teams.find(t => (t.team?.abbreviation || "").toLowerCase() === key);
     if (!match) {
       match = teams.find(t => (t.team?.displayName || "").toLowerCase().includes(key) || (t.team?.shortDisplayName || "").toLowerCase().includes(key));
@@ -136,13 +134,11 @@ async function findTeamViaEspn(input) {
 // Returns a short text summary or null on failure (caller will fall back to link).
 async function getTeamScheduleText(abbrev) {
   if (!abbrev) return null;
-  // ESPN has team schedule endpoints, but they vary — attempt a best-effort call
   const url = `https://site.api.espn.com/apis/site/v2/sports/football/nfl/teams/${abbrev}/schedule`;
   try {
     const data = await fetchJson(url).catch(() => null);
     if (!data || !data.events) return null;
 
-    // Build up to next ~10 schedule lines (date + opponent + location + result/score)
     const lines = data.events.slice(0, 10).map(ev => {
       const comp = ev.competitions?.[0];
       if (!comp) return null;
@@ -187,13 +183,19 @@ async function handle(i, db, client) {
 
   // Open modal to pick a team
   if (i.customId === "nfl_pick") {
-    const modal = new ModalBuilder().setCustomId('modal_nfl_pick').setTitle('Pick Favorite NFL Team')
-      .addComponents(
-        new ActionRowBuilder().addComponents(
-          new TextInputBuilder().setCustomId('team').setLabel('Team name or abbreviation (e.g., NE or Patriots)').setStyle(TextInputStyle.Short).setRequired(true)
-        )
-      );
-    await tryShowModal(i, modal);
+    try {
+      const modal = new ModalBuilder().setCustomId('modal_nfl_pick').setTitle('Pick Favorite NFL Team')
+        .addComponents(
+          new ActionRowBuilder().addComponents(
+            // short label to satisfy builder validation (<=45 chars)
+            new TextInputBuilder().setCustomId('team').setLabel('Team (e.g., NE, Patriots)').setStyle(TextInputStyle.Short).setRequired(true)
+          )
+        );
+      await tryShowModal(i, modal);
+    } catch (e) {
+      console.error('nfl show modal error', e);
+      await replyEphemeral(i, { content: 'Failed to open team picker' });
+    }
     return true;
   }
 
@@ -234,9 +236,7 @@ async function handle(i, db, client) {
       if (!rows.length) return await replyEphemeral(i, { content: 'No favorite set. Use Pick Team first.' });
       const fav = rows[0];
 
-      // Try to fetch schedule text via ESPN API
       let scheduleText = await getTeamScheduleText(fav.team_id).catch(() => null);
-      // If scheduleText is not available, fallback to ESPN team page link
       const teamPage = `https://www.espn.com/nfl/team/_/name/${fav.team_id.toLowerCase()}/${encodeURIComponent(fav.team_name.toLowerCase().replace(/\s+/g, "-"))}`;
 
       if (scheduleText) {
@@ -258,12 +258,10 @@ async function handle(i, db, client) {
 async function handleModal(i, db, client) {
   if (i.customId === 'modal_nfl_pick') {
     const raw = i.fields.getTextInputValue('team').trim();
-    // First try quick map or ESPN lookup to normalize
     let normalized = resolveTeamQuick(raw);
     let displayName = raw;
     let slug = null;
 
-    // Try ESPN lookup if quick map failed or to get slug/displayName
     const espn = await findTeamViaEspn(raw).catch(() => null);
     if (espn) {
       normalized = espn.abbrev;
@@ -272,7 +270,6 @@ async function handleModal(i, db, client) {
     }
 
     if (!normalized) {
-      // still not resolved — save raw as-is but inform user
       try {
         await dbRun(db, "INSERT OR REPLACE INTO nfl_favorites (user_id, team_id, team_name, created_at) VALUES (?,?,?,strftime('%s','now'))", [i.user.id, raw, raw]);
         await replyEphemeral(i, { content: `✅ Saved favorite team (unresolved input): ${raw}\nTip: try abbreviations like NE, KC, PHI or team names like 'Patriots'` });
@@ -283,7 +280,6 @@ async function handleModal(i, db, client) {
       return;
     }
 
-    // Save normalized abbrev + nice display name
     try {
       await dbRun(db, "INSERT OR REPLACE INTO nfl_favorites (user_id, team_id, team_name, created_at) VALUES (?,?,?,strftime('%s','now'))", [i.user.id, normalized, displayName]);
       const teamPage = slug ? `https://www.espn.com/nfl/team/_/name/${normalized.toLowerCase()}/${slug}` : `https://www.espn.com/nfl/team/_/name/${normalized.toLowerCase()}/${encodeURIComponent(displayName.toLowerCase().replace(/\s+/g, "-"))}`;
@@ -296,48 +292,6 @@ async function handleModal(i, db, client) {
   }
 
   await replyEphemeral(i, { content: 'Unknown modal' });
-}
-
-// Helper: try ESPN to resolve (reused from above)
-async function findTeamViaEspn(input) {
-  try {
-    const data = await fetchJson("https://site.api.espn.com/apis/site/v2/sports/football/nfl/teams");
-    const teams = data?.sports?.[0]?.leagues?.[0]?.teams || [];
-    const key = input.trim().toLowerCase();
-
-    // try quick map first
-    const quick = resolveTeamQuick(input);
-    if (quick) {
-      const match = teams.find(t => (t.team?.abbreviation || "").toLowerCase() === quick.toLowerCase());
-      if (match) return { abbrev: match.team.abbreviation, slug: match.team.slug, displayName: match.team.displayName };
-    }
-
-    let match = teams.find(t => (t.team?.abbreviation || "").toLowerCase() === key);
-    if (!match) {
-      match = teams.find(t => (t.team?.displayName || "").toLowerCase().includes(key) || (t.team?.shortDisplayName || "").toLowerCase().includes(key));
-    }
-    if (!match) return null;
-    return { abbrev: match.team.abbreviation, slug: match.team.slug, displayName: match.team.displayName };
-  } catch (e) {
-    console.error('findTeamViaEspn error', e);
-    return null;
-  }
-}
-
-// fetchJson helper (reused)
-function fetchJson(url, timeout = 10000) {
-  return new Promise((resolve, reject) => {
-    const req = https.get(url, (res) => {
-      if (res.statusCode !== 200) return reject(new Error(`Status ${res.statusCode}`));
-      let d = "";
-      res.on("data", c => d += c);
-      res.on("end", () => {
-        try { resolve(JSON.parse(d)); } catch (e) { reject(e); }
-      });
-    });
-    req.on("error", reject);
-    req.setTimeout(timeout, () => req.destroy(new Error("timeout")));
-  });
 }
 
 module.exports = { handle, handleModal };
