@@ -148,7 +148,7 @@ function panel() {
 `🎮 Gaming System
 📺 YouTube Dashboard
 🏈 NFL ${nflAvailable ? "" : "(unavailable)"}
-🔔 Notifications`
+🔔 Alerts`
     )
     .setColor("Blue");
 }
@@ -167,6 +167,7 @@ function buttons() {
 const EPHEMERAL_FLAG = 64;
 
 async function replyEphemeral(i, payload) {
+  // payload: { content, components, embeds, etc. }
   try {
     if (!i.replied && !i.deferred) {
       await i.reply({ ...payload, flags: EPHEMERAL_FLAG });
@@ -183,14 +184,16 @@ async function replyEphemeral(i, payload) {
 
 // ---------------- MESSAGES ----------------
 client.on("messageCreate", async (m) => {
+  // ignore other bots
   if (m.author?.bot) return;
 
   try {
-    // quick chat: set favorite
+    // QUICK: allow setting favorite team via chat command: !team set <team>
     if (m.content && m.content.toLowerCase().startsWith("!team set ")) {
       const team = m.content.split(" ").slice(2).join(" ").trim();
       if (!team) return m.reply("Usage: !team set <team>");
 
+      // store or replace favorite
       db.run(
         "INSERT OR REPLACE INTO nfl_favorites (user_id, team_id, team_name, created_at) VALUES (?,?,?,strftime('%s','now'))",
         [m.author.id, team, team],
@@ -250,7 +253,7 @@ ${list.join("\n") || "No data"}`
 // ---------------- INTERACTIONS ----------------
 client.on("interactionCreate", async (i) => {
   try {
-    // modal submits first
+    // 1) Modal submits first
     if (i.isModalSubmit && i.isModalSubmit()) {
       if (i.customId && i.customId.startsWith('modal_yt')) {
         await youtube.handleModal(i, db, client);
@@ -262,15 +265,17 @@ client.on("interactionCreate", async (i) => {
       }
     }
 
+    // 2) Only handle button interactions here
     if (!i.isButton || !i.isButton()) return;
 
-    // allow modules to handle first (they may show modals or reply)
+    // Let modules handle interactions that may show modals or reply synchronously
     const yHandled = await youtube.handle(i, db, client);
     if (yHandled) return;
     if (nfl) {
       const nHandled = await nfl.handle(i, db, client);
       if (nHandled) return;
     } else if (i.customId === 'nfl') {
+      // NFL button pressed but module missing — inform user briefly
       await replyEphemeral(i, { content: "NFL features are currently unavailable. The module failed to load on startup." });
       return;
     }
@@ -280,6 +285,7 @@ client.on("interactionCreate", async (i) => {
       try {
         await i.deferReply({ flags: EPHEMERAL_FLAG });
       } catch (err) {
+        // ignore defer errors (interaction may have been replied in-between)
         console.warn('deferReply failed (ignored):', err && err.message ? err.message : err);
       }
     }
@@ -314,6 +320,9 @@ async function start() {
     isPolling = true;
     try {
       await youtube.refreshAll(db, client);
+      if (nfl && nfl.refreshAll) {
+        await nfl.refreshAll(db, client);
+      }
     } catch (e) {
       console.error('Background refresh error', e);
     } finally {
